@@ -10,7 +10,7 @@ class MonChatbot extends Module
         $this->name = 'monchatbot';
         $this->tab = 'front_office_features';
         $this->version = '1.0.0';
-        $this->author = 'HananEsskoury';
+        $this->author = 'Hanan Esskoury & Ibtissam Tiheroui';
         $this->need_instance = 0;
         $this->ps_versions_compliancy = ['min' => '1.7', 'max' => '9.99.99'];
         $this->bootstrap = true;
