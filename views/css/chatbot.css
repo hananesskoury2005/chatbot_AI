@@ -1,0 +1,665 @@
+#monchatbot-widget {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    width: 60px;
+    height: 60px;
+    background: linear-gradient(135deg, #6E8D98 0%, #4A6069 100%);
+    color: white;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    font-size: 24px;
+    cursor: pointer;
+    box-shadow: 0 4px 14px rgba(74, 96, 105, 0.45);
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+    z-index: 9999;
+}
+
+#monchatbot-widget:hover {
+    transform: scale(1.05);
+    box-shadow: 0 6px 18px rgba(74, 96, 105, 0.55);
+}
+
+#monchatbot-window,
+#monchatbot-window * {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+#monchatbot-window {
+    position: fixed;
+    bottom: 90px;
+    right: 20px;
+    width: 460px;
+    height: 600px;
+    max-height: calc(100vh - 110px);
+    background: white;
+    border-radius: 12px;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+    flex-direction: row;
+    overflow: hidden;
+    z-index: 9999;
+    transition: width 0.2s ease, height 0.2s ease, max-height 0.2s ease;
+}
+
+#monchatbot-window.monchatbot-window-expanded {
+    width: 800px;
+    height: 82vh;
+    max-height: 82vh;
+    bottom: 20px;
+}
+
+#monchatbot-sidebar {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 48px;
+    background-color: #4A6069;
+    padding: 10px 0;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+#monchatbot-sidebar button {
+    width: 34px;
+    height: 34px;
+    border: none;
+    background: transparent;
+    color: #cfe0e5;
+    border-radius: 8px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+}
+
+#monchatbot-sidebar button:hover {
+    background: rgba(255, 255, 255, 0.15);
+    color: #ffffff;
+}
+
+#monchatbot-sidebar button svg {
+    width: 18px;
+    height: 18px;
+}
+
+#monchatbot-sidebar .monchatbot-sidebar-divider {
+    width: 24px;
+    height: 1px;
+    background: rgba(255, 255, 255, 0.2);
+    margin: 4px 0;
+}
+
+#monchatbot-history-panel {
+    display: none;
+    position: absolute;
+    left: 48px;
+    top: 0;
+    bottom: 0;
+    width: 230px;
+    background: white;
+    border-right: 1px solid #e0e0e0;
+    box-shadow: 2px 0 10px rgba(0, 0, 0, 0.12);
+    overflow-y: auto;
+    z-index: 10;
+}
+
+#monchatbot-history-panel.monchatbot-open {
+    display: block;
+}
+
+#monchatbot-history-panel .monchatbot-history-title {
+    padding: 12px 14px;
+    font-size: 14px;
+    font-weight: bold;
+    color: #2c2c2a;
+    border-bottom: 1px solid #eee;
+}
+
+/* Barre de recherche, insérée dynamiquement juste sous le titre du panneau */
+.monchatbot-history-search-wrap {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 8px 10px;
+    padding: 0 8px;
+    height: 32px;
+    background: #f2f6f7;
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+}
+
+.monchatbot-history-search-wrap:focus-within {
+    border-color: #6E8D98;
+    background: white;
+}
+
+.monchatbot-history-search-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #8a8a86;
+    flex-shrink: 0;
+}
+
+.monchatbot-history-search-icon svg {
+    width: 14px;
+    height: 14px;
+}
+
+.monchatbot-history-search-input {
+    flex: 1;
+    min-width: 0;
+    border: none;
+    outline: none;
+    background: transparent;
+    font-size: 13px;
+    color: #2c2c2a;
+}
+
+.monchatbot-history-search-input::placeholder {
+    color: #999;
+}
+
+/* En-tête de groupe ("Aujourd'hui", "Hier", "Cette semaine", "Plus ancien") */
+.monchatbot-history-group-label {
+    padding: 10px 14px 4px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: #8a8a86;
+}
+
+#monchatbot-history-panel .monchatbot-history-item {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    padding: 10px 14px;
+    cursor: pointer;
+    border-bottom: 1px solid #f2f2f2;
+    position: relative;
+}
+
+#monchatbot-history-panel .monchatbot-history-item:hover {
+    background: #f2f6f7;
+}
+
+#monchatbot-history-panel .monchatbot-history-item-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    flex: 1;
+}
+
+#monchatbot-history-panel .monchatbot-history-item-label {
+    font-size: 13px;
+    color: #2c2c2a;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+#monchatbot-history-panel .monchatbot-history-item-date {
+    font-size: 11px;
+    color: #999;
+}
+
+#monchatbot-history-panel .monchatbot-history-item-menu {
+    flex-shrink: 0;
+    width: 24px;
+    height: 24px;
+    border: none;
+    background: transparent;
+    color: #8a8a86;
+    border-radius: 6px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    padding: 0;
+}
+
+#monchatbot-history-panel .monchatbot-history-item:hover .monchatbot-history-item-menu {
+    opacity: 1;
+}
+
+#monchatbot-history-panel .monchatbot-history-item-menu:hover {
+    background: #e5e9ea;
+    color: #2c2c2a;
+}
+
+#monchatbot-history-panel .monchatbot-history-item-menu svg {
+    width: 16px;
+    height: 16px;
+}
+
+.monchatbot-history-item-dropdown {
+    position: absolute;
+    top: 34px;
+    right: 8px;
+    background: white;
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.15);
+    min-width: 130px;
+    z-index: 20;
+    overflow: hidden;
+}
+
+.monchatbot-history-item-dropdown button {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    border: none;
+    background: transparent;
+    padding: 9px 12px;
+    font-size: 13px;
+    color: #c23b3b;
+    cursor: pointer;
+    text-align: left;
+}
+
+.monchatbot-history-item-dropdown button:hover {
+    background: #fbeeee;
+}
+
+.monchatbot-history-item-dropdown button svg {
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+}
+
+#monchatbot-history-panel .monchatbot-history-empty {
+    padding: 16px 14px;
+    font-size: 13px;
+    color: #999;
+}
+
+#monchatbot-main {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+}
+
+#monchatbot-header {
+    background: linear-gradient(135deg, #6E8D98 0%, #4A6069 100%);
+    color: white;
+    padding: 16px 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-weight: 600;
+    font-size: 16px;
+    letter-spacing: 0.3px;
+    flex-shrink: 0;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+    position: relative;
+    z-index: 1;
+}
+
+#monchatbot-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+#monchatbot-expand,
+#monchatbot-close {
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background-color 0.15s ease;
+}
+
+#monchatbot-expand:hover,
+#monchatbot-close:hover {
+    background: rgba(255, 255, 255, 0.15);
+}
+
+#monchatbot-expand {
+    cursor: pointer;
+}
+
+#monchatbot-expand svg {
+    width: 16px;
+    height: 16px;
+}
+
+#monchatbot-close {
+    cursor: pointer;
+}
+
+#monchatbot-messages {
+    flex: 1;
+    padding: 12px;
+    overflow-y: auto;
+}
+
+.monchatbot-row {
+    display: flex;
+    margin-bottom: 10px;
+}
+
+.monchatbot-row-user {
+    justify-content: flex-end;
+}
+
+.monchatbot-row-bot {
+    justify-content: flex-start;
+}
+
+/* Colonne englobant la bulle (user ou bot) + sa barre méta (heure + actions),
+   pour qu'elles restent alignées et limitées à la même largeur maximale que la bulle. */
+.monchatbot-message-col {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    max-width: 82%;
+}
+
+.monchatbot-bubble {
+    max-width: 82%;
+    padding: 10px 12px;
+    border-radius: 12px;
+    font-size: 14px;
+    line-height: 1.45;
+    /* Préserve les retours à la ligne (\n) envoyés par Gemini : sans ça,
+       le navigateur les ignore et affiche tout sur une seule ligne. */
+    white-space: pre-line;
+    word-wrap: break-word;
+}
+
+/* À l'intérieur de .monchatbot-message-col, la largeur max est déjà portée
+   par le conteneur : on laisse la bulle occuper l'espace disponible. */
+.monchatbot-message-col .monchatbot-bubble-bot,
+.monchatbot-message-col .monchatbot-bubble-user {
+    max-width: 100%;
+}
+
+.monchatbot-bubble-user {
+    background-color: #6E8D98;
+    color: white;
+    border-bottom-right-radius: 4px;
+}
+
+.monchatbot-bubble-bot {
+    background-color: #f0f2f3;
+    color: #2c2c2a;
+    border-bottom-left-radius: 4px;
+}
+
+/* Ligne "métadonnées" sous la bulle : horodatage + actions sur UNE SEULE ligne,
+   comme dans la maquette (ex: "il y a 3 minutes  [copier] [réessayer] [modifier]"). */
+.monchatbot-meta {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+    margin-top: 4px;
+    padding: 0 4px;
+}
+
+.monchatbot-meta-time {
+    font-size: 11px;
+    color: #999;
+    white-space: nowrap;
+}
+
+.monchatbot-meta-actions {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+}
+
+.monchatbot-action-btn {
+    width: 26px;
+    height: 26px;
+    border: none;
+    background: transparent;
+    color: #8a8a86;
+    border-radius: 6px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+}
+
+.monchatbot-action-btn:hover {
+    background: #e5e9ea;
+    color: #2c2c2a;
+}
+
+.monchatbot-action-btn svg {
+    width: 15px;
+    height: 15px;
+}
+
+.monchatbot-action-btn.monchatbot-action-copied {
+    color: #2f9e44;
+}
+
+.monchatbot-hidden {
+    display: none !important;
+}
+
+/* Aperçu de la photo sélectionnée, juste au-dessus de la zone de saisie */
+#monchatbot-image-preview {
+    position: relative;
+    display: flex;
+    align-items: center;
+    padding: 8px 12px;
+    border-top: 1px solid #eee;
+    flex-shrink: 0;
+}
+
+#monchatbot-preview-img {
+    height: 48px;
+    width: 48px;
+    object-fit: cover;
+    border-radius: 6px;
+    border: 1px solid #e0e0e0;
+}
+
+#monchatbot-remove-image {
+    position: absolute;
+    top: 4px;
+    left: 56px;
+    width: 18px;
+    height: 18px;
+    background: #2c2c2a;
+    color: white;
+    border: none;
+    border-radius: 50%;
+    font-size: 12px;
+    line-height: 1;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+}
+
+#monchatbot-input-area {
+    display: flex;
+    align-items: center;
+    border-top: 1px solid #eee;
+    flex-shrink: 0;
+    gap: 4px;
+    padding: 0 6px;
+}
+
+#monchatbot-attach-btn {
+    flex-shrink: 0;
+    width: 34px;
+    height: 34px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #8a8a86;
+    border-radius: 50%;
+    cursor: pointer;
+}
+
+#monchatbot-attach-btn:hover {
+    background: #f2f6f7;
+    color: #2c2c2a;
+}
+
+#monchatbot-attach-btn svg {
+    width: 20px;
+    height: 20px;
+}
+
+#monchatbot-input {
+    flex: 1;
+    border: none;
+    padding: 12px 6px;
+    outline: none;
+    min-width: 0;
+}
+
+#monchatbot-send {
+    flex-shrink: 0;
+    width: 34px;
+    height: 34px;
+    background: linear-gradient(135deg, #6E8D98 0%, #4A6069 100%);
+    color: white;
+    border: none;
+    border-radius: 50%;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    margin: 8px 4px;
+    transition: opacity 0.15s ease;
+}
+
+#monchatbot-send:hover {
+    opacity: 0.85;
+}
+
+#monchatbot-send svg {
+    width: 17px;
+    height: 17px;
+}
+
+/* État "génération en cours" : le bouton devient un carré (stop) foncé */
+#monchatbot-send.monchatbot-is-stop {
+    background-color: #2c2c2a;
+    border-radius: 10px;
+}
+
+#monchatbot-send.monchatbot-is-stop:hover {
+    background-color: #1a1a19;
+}
+
+#monchatbot-send.monchatbot-is-stop svg {
+    width: 13px;
+    height: 13px;
+}
+
+/* Sur petits écrans (mobile), on repasse en plein écran pour rester utilisable */
+@media (max-width: 480px) {
+    #monchatbot-window,
+    #monchatbot-window.monchatbot-window-expanded {
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        width: 100%;
+        height: 100%;
+        max-height: 100%;
+        border-radius: 0;
+    }
+
+    #monchatbot-expand {
+        display: none;
+    }
+}
+/* Écran d'accueil centré (icône + titre + sous-titre), affiché quand la
+   conversation est vide, dans le style d'un écran d'accueil d'assistant. */
+.monchatbot-welcome {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    height: 100%;
+    padding: 24px;
+    gap: 6px;
+}
+
+.monchatbot-welcome-icon {
+    color: #6E8D98;
+    margin-bottom: 8px;
+}
+
+
+.monchatbot-welcome-title {
+    font-size: 19px;
+    font-weight: 600;
+    color: #2c2c2a;
+}
+
+.monchatbot-welcome-subtitle {
+    font-size: 14px;
+    color: #8a8a86;
+    max-width: 260px;
+}
+.monchatbot-welcome-icon svg {
+    width: 30px;
+    height: 30px;
+}
+/* Bouton flottant pour revenir au dernier message */
+#monchatbot-scroll-bottom {
+    position: absolute;
+    bottom: 70px; /* Au-dessus de la zone de saisie */
+    right: 15px;
+    width: 32px;
+    height: 32px;
+    background-color: white;
+    border: 1px solid #e0e0e0;
+    border-radius: 50%;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #6E8D98;
+    z-index: 5;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.3s ease, transform 0.3s ease;
+}
+
+#monchatbot-scroll-bottom.monchatbot-visible {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateY(0);
+}
+
+#monchatbot-scroll-bottom:hover {
+    background-color: #f0f2f3;
+}
+
+#monchatbot-scroll-bottom svg {
+    width: 16px;
+    height: 16px;
+    transform: rotate(45deg); /* Pour orienter la flèche vers le bas droite comme sur votre image */
+}
