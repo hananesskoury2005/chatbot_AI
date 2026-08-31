@@ -211,8 +211,10 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     }
 
-    // Sélection d'une photo : lecture en data URL pour l'aperçu ET pour
-    // l'envoi (le préfixe "data:...;base64," est retiré côté serveur).
+    // CORRECTIF 3 : Sélection d'une photo avec compression canvas
+    // L'image est compressée dès la sélection pour :
+    // 1) Économiser la taille en localStorage (quota)
+    // 2) Permettre de conserver l'image dans l'historique (plus besoin de la supprimer)
     fileInput.addEventListener('change', function (e) {
         var file = e.target.files[0];
         if (!file) {
@@ -220,11 +222,23 @@ document.addEventListener('DOMContentLoaded', function () {
         }
         var reader = new FileReader();
         reader.onload = function (evt) {
-            selectedBase64Image = evt.target.result;
-            var mimeMatch = selectedBase64Image.match(/^data:(.*?);base64,/);
-            selectedImageMime = mimeMatch ? mimeMatch[1] : (file.type || 'image/jpeg');
-            previewImg.src = selectedBase64Image;
-            imagePreviewContainer.classList.remove('monchatbot-hidden');
+            var img = new Image();
+            img.onload = function () {
+                var maxWidth = 800;
+                var scale = Math.min(1, maxWidth / img.width);
+                var canvas = document.createElement('canvas');
+                canvas.width = img.width * scale;
+                canvas.height = img.height * scale;
+                var ctx = canvas.getContext('2d');
+                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+                var compressed = canvas.toDataURL('image/jpeg', 0.7);
+                selectedBase64Image = compressed;
+                selectedImageMime = 'image/jpeg';
+                previewImg.src = compressed;
+                imagePreviewContainer.classList.remove('monchatbot-hidden');
+            };
+            img.src = evt.target.result;
         };
         reader.readAsDataURL(file);
     });
@@ -605,26 +619,11 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     }
 
-    // CORRECTIF : retire le champ "image" (base64, potentiellement lourd)
-    // des messages avant persistance dans localStorage. currentMessages
-    // n'est PAS modifié : l'image reste affichée normalement pendant la
-    // session en cours, seule la version sauvegardée dans l'historique
-    // est allégée.
+    // CORRECTIF 3 : L'image est déjà compressée en amont (800px, JPEG 70%)
+    // donc plus besoin de la supprimer pour l'historique. On retourne le
+    // message tel quel avec son image conservée.
     function stripImagesForStorage(messages) {
-        return messages.map(function (m) {
-            if (m.image) {
-                var copy = {};
-                for (var k in m) {
-                    if (Object.prototype.hasOwnProperty.call(m, k)) {
-                        copy[k] = m[k];
-                    }
-                }
-                copy.image = null;
-                copy.hadImage = true;
-                return copy;
-            }
-            return m;
-        });
+        return messages;
     }
 
     function makePreviewFromMessages(messages) {

@@ -3,6 +3,8 @@ if (!defined('_PS_VERSION_')) {
     exit;
 }
 
+require_once _PS_MODULE_DIR_ . 'monchatbot/CatalogJsonExporter.php';
+
 class MonChatbotChatModuleFrontController extends ModuleFrontController
 {
     public $ajax = true;
@@ -13,260 +15,333 @@ class MonChatbotChatModuleFrontController extends ModuleFrontController
     }
 
     public function postProcess()
-    {
-        // Le front-end (chatbot.js) envoie le body en JSON brut (fetch avec
-        // Content-Type: application/json) dès qu'une photo est jointe, pour
-        // pouvoir transporter l'image en base64 sans les limites de taille du
-        // form-urlencoded classique. Tools::getValue() ne lit que $_POST/$_GET
-        // et ne verrait donc jamais rien dans ce cas : on lit d'abord le corps
-        // JSON brut, avec repli sur Tools::getValue() pour rester compatible
-        // avec un appel form-urlencoded simple (texte seul, sans image).
-        $rawInput = Tools::file_get_contents('php://input');
-        $jsonInput = json_decode($rawInput, true);
+{
+    // Le front-end (chatbot.js) envoie le body en JSON brut (fetch avec
+    // Content-Type: application/json) dès qu'une photo est jointe, pour
+    // pouvoir transporter l'image en base64 sans les limites de taille du
+    // form-urlencoded classique. Tools::getValue() ne lit que $_POST/$_GET
+    // et ne verrait donc jamais rien dans ce cas : on lit d'abord le corps
+    // JSON brut, avec repli sur Tools::getValue() pour rester compatible
+    // avec un appel form-urlencoded simple (texte seul, sans image).
+    $rawInput = Tools::file_get_contents('php://input');
+    $jsonInput = json_decode($rawInput, true);
 
-        if (is_array($jsonInput)) {
-            $userMessage = isset($jsonInput['message']) ? (string) $jsonInput['message'] : '';
-            $imageData = isset($jsonInput['image']) ? (string) $jsonInput['image'] : '';
-            $imageMime = isset($jsonInput['image_mime']) ? (string) $jsonInput['image_mime'] : '';
-        } else {
-            $userMessage = Tools::getValue('message');
-            $imageData = Tools::getValue('image');
-            $imageMime = Tools::getValue('image_mime');
+    if (is_array($jsonInput)) {
+        $userMessage = isset($jsonInput['message']) ? (string) $jsonInput['message'] : '';
+        $imageData = isset($jsonInput['image']) ? (string) $jsonInput['image'] : '';
+        $imageMime = isset($jsonInput['image_mime']) ? (string) $jsonInput['image_mime'] : '';
+    } else {
+        $userMessage = Tools::getValue('message');
+        $imageData = Tools::getValue('image');
+        $imageMime = Tools::getValue('image_mime');
+    }
+
+    $hasImage = !empty($imageData);
+
+    if (empty($userMessage) && !$hasImage) {
+        $this->sendJsonResponse(['reply' => 'Message vide reçu.']);
+    }
+
+    $apiKey = Configuration::get('MONCHATBOT_GEMINI_API_KEY');
+
+    if (empty($apiKey)) {
+        $this->sendJsonResponse(['reply' => 'Erreur : clé API Gemini non configurée.']);
+    }
+
+    $idLang = (int) $this->context->language->id;
+
+    // CORRIGÉ : Détection des messages vagues (SANS image)
+    // Si le message est vague ("avez vous ce produit", "une alternative"...)
+    // et qu'il n'y a pas d'image, on demande des précisions avant de lancer
+    // une recherche inutile sur "produit" qui échouera.
+    if (!$hasImage && $this->isVagueMessage($userMessage)) {
+        $categories = $this->getTopCategoryNames($idLang, 10);
+        $categoriesList = !empty($categories) ? implode(', ', $categories) : '';
+
+        $reply = "Je ne vois pas quel produit vous cherchez. "
+            . "Pourriez-vous me décrire le produit que vous souhaitez ? "
+            . "(ex: gel douche, shampoing, savon, crème, t-shirt, carnet...)\n\n"
+            . "Voici nos catégories disponibles : " . $categoriesList . ".";
+
+        $this->sendJsonResponse(['reply' => $reply]);
+    }
+
+    // Recherche par photo - APPROCHE AMÉLIORÉE AVEC FALLBACK
+    if ($hasImage) {
+        // CORRIGÉ : on récupère les vraies catégories du catalogue et on les
+        // injecte dans l'analyse image + le fallback texte, pour que la
+        // reconnaissance ne soit plus limitée aux seuls types beauté/hygiène
+        // codés en dur (cf. bug du t-shirt non reconnu).
+        $availableCategoriesForImage = $this->getAllCategoryNames($idLang, 40);
+        $imageAnalysis = $this->describeImageWithGemini($imageData, $imageMime, $apiKey, $userMessage, $availableCategoriesForImage);
+
+        // FALLBACK 1 : Si l'image n'est pas reconnue mais que le message contient des indices
+        if ($imageAnalysis === false && !empty($userMessage)) {
+            $extractedType = $this->extractProductTypeFromMessage($userMessage, $availableCategoriesForImage);
+            if ($extractedType) {
+                error_log('FALLBACK - TYPE EXTRAIT DU MESSAGE: ' . $extractedType);
+                $imageAnalysis = [
+                    'type' => $extractedType,
+                    'marque' => '',
+                    'benefices' => [],
+                    'public' => '',
+                    'usage' => '',
+                    'keywords' => [$extractedType],
+                ];
+            }
         }
 
-        $hasImage = !empty($imageData);
+        // FALLBACK 2 : Si toujours pas reconnu, proposer une aide
+        if ($imageAnalysis === false) {
+            $categories = $this->getTopCategoryNames($idLang, 10);
+            $categoriesList = !empty($categories) ? ' (' . implode(', ', $categories) . ')' : '';
 
-        if (empty($userMessage) && !$hasImage) {
-            $this->sendJsonResponse(['reply' => 'Message vide reçu.']);
+            $this->sendJsonResponse([
+                'reply' => "Je n'arrive pas à identifier clairement le produit sur cette photo. "
+                    . "L'image semble floue ou trop complexe à analyser. "
+                    . "Pouvez-vous :\n"
+                    . "1. Envoyer une photo plus nette (avec un bon éclairage) ?\n"
+                    . "2. Ou me décrire le produit (ex: gel douche, shampoing, dentifrice...) ?\n"
+                    . "3. Ou me donner le nom du produit ou la marque ?" . $categoriesList . "\n"
+                    . "Je vous aiderai avec plaisir à trouver ce que vous cherchez !"
+            ]);
         }
 
-        $apiKey = Configuration::get('MONCHATBOT_GEMINI_API_KEY');
+        error_log('ANALYSE IMAGE GEMINI: ' . print_r($imageAnalysis, true));
 
-        if (empty($apiKey)) {
-            $this->sendJsonResponse(['reply' => 'Erreur : clé API Gemini non configurée.']);
+        // 1) Récupérer les informations
+        $productType = $imageAnalysis['type'] ?? '';
+        $benefices = $imageAnalysis['benefices'] ?? [];
+        $public = $imageAnalysis['public'] ?? '';
+        $marque = $imageAnalysis['marque'] ?? '';
+        $keywords = $imageAnalysis['keywords'] ?? [];
+
+        // 2) Construire les termes de recherche
+        $searchTerms = [$productType];
+
+        if (!empty($benefices)) {
+            foreach ($benefices as $benefice) {
+                if (!empty($benefice) && strlen($benefice) > 2) {
+                    $searchTerms[] = $benefice;
+                }
+            }
         }
 
-        $idLang = (int) $this->context->language->id;
+        // CORRIGÉ (patch 2) : $public ne doit plus servir de critère de
+        // recherche à part entière (ex: "hommes" reconnu sur un
+        // parfum matchait n'importe quel produit décrit pour "hommes",
+        // comme des pulls). Il reste uniquement dans $keywordsData pour
+        // l'affichage/le prompt.
 
-        // Recherche par photo - APPROCHE AMÉLIORÉE AVEC FALLBACK
-        if ($hasImage) {
-            // CORRIGÉ : on récupère les vraies catégories du catalogue et on les
-            // injecte dans l'analyse image + le fallback texte, pour que la
-            // reconnaissance ne soit plus limitée aux seuls types beauté/hygiène
-            // codés en dur (cf. bug du t-shirt non reconnu).
-            $availableCategoriesForImage = $this->getAllCategoryNames($idLang, 40);
-            $imageAnalysis = $this->describeImageWithGemini($imageData, $imageMime, $apiKey, $userMessage, $availableCategoriesForImage);
+        // AJOUTER LA MARQUE SEULEMENT SI ELLE EXISTE DANS LE CATALOGUE
+        $marqueExists = false;
+        if (!empty($marque) && strlen($marque) > 2) {
+            $sql = 'SELECT COUNT(*) FROM ' . _DB_PREFIX_ . 'product p
+                    JOIN ' . _DB_PREFIX_ . 'manufacturer m ON p.id_manufacturer = m.id_manufacturer
+                    WHERE LOWER(m.name) LIKE LOWER("%' . pSQL($marque) . '%")';
+            $marqueExists = (int) Db::getInstance()->getValue($sql) > 0;
+            if ($marqueExists) {
+                $searchTerms[] = $marque;
+            } else {
+                error_log('MARQUE IGNORÉE (non trouvée dans catalogue): ' . $marque);
+            }
+        }
 
-            // FALLBACK 1 : Si l'image n'est pas reconnue mais que le message contient des indices
-            if ($imageAnalysis === false && !empty($userMessage)) {
-                $extractedType = $this->extractProductTypeFromMessage($userMessage, $availableCategoriesForImage);
-                if ($extractedType) {
-                    error_log('FALLBACK - TYPE EXTRAIT DU MESSAGE: ' . $extractedType);
-                    $imageAnalysis = [
-                        'type' => $extractedType,
-                        'marque' => '',
-                        'benefices' => [],
-                        'public' => '',
-                        'usage' => '',
-                        'keywords' => [$extractedType],
+        // 3) Construire le tableau de données pour la recherche
+        $keywordsData = [
+            'search_terms' => $searchTerms,
+            'marque' => $marqueExists ? $marque : '',
+            'type' => $productType,
+            'benefices' => $benefices,
+            'public' => $public,
+        ];
+
+        // 4) Recherche
+        $produits = $this->getProductsFromKeywords($keywordsData, $idLang, 10);
+
+        // 5) SI AUCUN PRODUIT TROUVÉ, FORCER UNE RECHERCHE PAR TYPE UNIQUEMENT
+        if (empty($produits) && !empty($productType)) {
+            error_log('RECHERCHE FORCÉE PAR TYPE: ' . $productType);
+            $result = $this->searchCatalogJson($idLang, $productType, 10);
+            if (!empty($result['result'])) {
+                foreach ($result['result'] as $item) {
+                    $quantity = (int) ($item['quantity'] ?? 0);
+                    if ($quantity <= 0) {
+                        continue;
+                    }
+                    $priceHT = $item['price_amount'] ?? $item['price'];
+                    $priceTTC = $this->getPriceTTC($item['id_product'] ?? 0, $priceHT);
+                    $produits[] = [
+                        'nom' => $item['name'],
+                        'prix' => $this->formatPrice($priceTTC),
+                        'prix_brut' => $priceTTC,
+                        'marque' => $item['manufacturer_name'] ?? '',
+                        'quantite' => $quantity,
+                        'description' => strip_tags($item['description_short'] ?? ''),
+                        'description_longue' => strip_tags($item['description'] ?? ''),
+                        'score' => 10,
                     ];
                 }
             }
-
-            // FALLBACK 2 : Si toujours pas reconnu, proposer une aide
-            if ($imageAnalysis === false) {
-                $categories = $this->getTopCategoryNames($idLang, 5);
-                $categoriesList = !empty($categories) ? ' (' . implode(', ', $categories) . ')' : '';
-
-                $this->sendJsonResponse([
-                    'reply' => "Je n'arrive pas à identifier clairement le produit sur cette photo. "
-                        . "L'image semble floue ou trop complexe à analyser. "
-                        . "Pouvez-vous :\n"
-                        . "1. Envoyer une photo plus nette (avec un bon éclairage) ?\n"
-                        . "2. Ou me décrire le produit (ex: gel douche, shampoing, dentifrice...) ?\n"
-                        . "3. Ou me donner le nom du produit ou la marque ?" . $categoriesList . "\n"
-                        . "Je vous aiderai avec plaisir à trouver ce que vous cherchez !"
-                ]);
-            }
-
-            error_log('ANALYSE IMAGE GEMINI: ' . print_r($imageAnalysis, true));
-
-            // 1) Récupérer les informations
-            $productType = $imageAnalysis['type'] ?? '';
-            $benefices = $imageAnalysis['benefices'] ?? [];
-            $public = $imageAnalysis['public'] ?? '';
-            $marque = $imageAnalysis['marque'] ?? '';
-            $keywords = $imageAnalysis['keywords'] ?? [];
-
-            // 2) Construire les termes de recherche
-            $searchTerms = [$productType];
-
-            if (!empty($benefices)) {
-                foreach ($benefices as $benefice) {
-                    if (!empty($benefice) && strlen($benefice) > 2) {
-                        $searchTerms[] = $benefice;
-                    }
-                }
-            }
-
-            if (!empty($public) && strlen($public) > 2) {
-                $searchTerms[] = $public;
-            }
-
-            // AJOUTER LA MARQUE SEULEMENT SI ELLE EXISTE DANS LE CATALOGUE
-            $marqueExists = false;
-            if (!empty($marque) && strlen($marque) > 2) {
-                $sql = 'SELECT COUNT(*) FROM ' . _DB_PREFIX_ . 'product p
-                        JOIN ' . _DB_PREFIX_ . 'manufacturer m ON p.id_manufacturer = m.id_manufacturer
-                        WHERE LOWER(m.name) LIKE LOWER("%' . pSQL($marque) . '%")';
-                $marqueExists = (int) Db::getInstance()->getValue($sql) > 0;
-                if ($marqueExists) {
-                    $searchTerms[] = $marque;
-                } else {
-                    error_log('MARQUE IGNORÉE (non trouvée dans catalogue): ' . $marque);
-                }
-            }
-
-            // 3) Construire le tableau de données pour la recherche
-            $keywordsData = [
-                'search_terms' => $searchTerms,
-                'marque' => $marqueExists ? $marque : '',
-                'type' => $productType,
-                'benefices' => $benefices,
-                'public' => $public,
-            ];
-
-            // 4) Recherche
-            $produits = $this->getProductsFromKeywords($keywordsData, $idLang, 10);
-
-            // 5) SI AUCUN PRODUIT TROUVÉ, FORCER UNE RECHERCHE PAR TYPE UNIQUEMENT
-            if (empty($produits) && !empty($productType)) {
-                error_log('RECHERCHE FORCÉE PAR TYPE: ' . $productType);
-                $result = Search::find($idLang, $productType, 1, 10, 'position', 'desc', false, true, $this->context);
-                if (!empty($result['result'])) {
-                    foreach ($result['result'] as $item) {
-                        $quantity = (int) ($item['quantity'] ?? 0);
-                        if ($quantity <= 0) {
-                            continue;
-                        }
-                        $priceHT = $item['price_amount'] ?? $item['price'];
-                        $priceTTC = $this->getPriceTTC($item['id_product'] ?? 0, $priceHT);
-                        $produits[] = [
-                            'nom' => $item['name'],
-                            'prix' => $this->formatPrice($priceTTC),
-                            'prix_brut' => $priceTTC,
-                            'marque' => $item['manufacturer_name'] ?? '',
-                            'quantite' => $quantity,
-                            'description' => strip_tags($item['description_short'] ?? ''),
-                            'description_longue' => strip_tags($item['description'] ?? ''),
-                            'score' => 10,
-                        ];
-                    }
-                }
-            }
-
-            $language = empty($userMessage) ? 'français' : $this->detectLanguageWithGemini($userMessage, $apiKey);
-
-            // 6) Construire le prompt
-            $prompt = $this->buildImagePrompt(
-                $userMessage,
-                $produits,
-                $language,
-                $imageAnalysis,
-                $idLang
-            );
-
-            error_log('PRODUITS TROUVÉS: ' . print_r($produits, true));
-            error_log('PROMPT ENVOYÉ: ' . $prompt);
-
-            $reply = $this->callGemini($prompt, $apiKey);
-
-            $this->sendJsonResponse(['reply' => $reply]);
         }
 
-        // Étape 1 : détecter l'intention
-        $availableCategories = $this->getAllCategoryNames($idLang, 40);
-        $intentResult = $this->detectIntentWithGemini($userMessage, $apiKey, $availableCategories);
+        $language = empty($userMessage) ? 'français' : $this->detectLanguageWithGemini($userMessage, $apiKey);
 
-        error_log('INTENTION DÉTECTÉE PAR GEMINI: ' . $intentResult['intent']
-            . ' / MOT-CLÉ: ' . $intentResult['keyword']
-            . ' / LANGUE: ' . $intentResult['language']
-            . ' / FILTRES: ' . print_r($intentResult['filters'], true));
-
-        // Court-circuit : salutation ou question hors-sujet -> réponse courte,
-        // sans passer par la recherche produit ni le prompt général (qui n'a pas
-        // de limite de longueur et peut partir sur un pavé, cf. "c'est quoi le monde").
-        if ($intentResult['intent'] === 'greeting' || $intentResult['intent'] === 'thanks' || $intentResult['intent'] === 'off_topic') {
-            $topCategories = $this->getTopCategoryNames($idLang, 4);
-            $shortPrompt = $this->buildShortPrompt(
-                $userMessage,
-                $intentResult['intent'],
-                $intentResult['language'],
-                $topCategories
-            );
-
-            error_log('INTENTION COURTE (' . $intentResult['intent'] . ') - PROMPT: ' . $shortPrompt);
-
-            $reply = $this->callGemini($shortPrompt, $apiKey);
-
-            $this->sendJsonResponse(['reply' => $reply]);
-        }
-
-        // Étape 2 : récupérer les produits
-        $totalCategoryCount = null;
-        $subCategoriesSuggestion = [];
-        $categoryNotFound = false;
-        $filters = $intentResult['filters'] ?? [];
-
-        if ($intentResult['intent'] === 'category') {
-            // CORRIGÉ : "keyword" doit maintenant être le nom exact d'une
-            // catégorie (voir le prompt d'intention durci plus bas) ; si
-            // jamais Gemini le sait avoir renvoyé quelque chose qui ne
-            // matche aucune catégorie, findCategoryIdByName() a de toute
-            // façon un repli par recherche partielle (stripos).
-            $idCategory = $this->findCategoryIdByName($intentResult['keyword'], $idLang);
-
-            if ($idCategory) {
-                $categoryData = $this->getProductsByCategory($idCategory, $idLang, 5, $filters);
-                $produits = $categoryData['produits'];
-                $totalCategoryCount = $categoryData['total'];
-
-                if ($totalCategoryCount > 30) {
-                    $subCategoriesSuggestion = $this->getSubCategoryNames($idCategory, $idLang);
-                }
-            } else {
-                $categoryNotFound = true;
-                $produits = [];
-                $subCategoriesSuggestion = $this->getTopCategoryNames($idLang);
-            }
-        } else {
-            // RECHERCHE HYBRIDE : recherche exacte + élargissement par catégorie
-            $produits = $this->getHybridProducts($intentResult['keyword'], $idLang, 5, $filters);
-        }
-
-        // Étape 3 : construire le prompt final
-        $prompt = $this->buildPrompt(
+        // 6) Construire le prompt
+        $prompt = $this->buildImagePrompt(
             $userMessage,
             $produits,
-            $intentResult['language'],
-            $totalCategoryCount,
-            $subCategoriesSuggestion,
-            $categoryNotFound,
-            null,
-            $filters,
+            $language,
+            $imageAnalysis,
             $idLang
         );
 
         error_log('PRODUITS TROUVÉS: ' . print_r($produits, true));
-        if ($totalCategoryCount !== null) {
-            error_log('TOTAL RÉEL CATÉGORIE: ' . $totalCategoryCount . ' / SOUS-CATÉGORIES PROPOSÉES: ' . implode(', ', $subCategoriesSuggestion));
-        }
         error_log('PROMPT ENVOYÉ: ' . $prompt);
 
         $reply = $this->callGemini($prompt, $apiKey);
 
         $this->sendJsonResponse(['reply' => $reply]);
     }
+
+    // Étape 1 : détecter l'intention (avec traduction automatique si nécessaire)
+    $availableCategories = $this->getAllCategoryNames($idLang, 40);
+    $intentResult = $this->detectIntentWithGemini($userMessage, $apiKey, $availableCategories);
+
+    // CORRECTIF : Gemini corrige les fautes de frappe ("shampoin" ->
+    // "shampooing"), mais vers l'orthographe standard, alors que les
+    // noms produits du catalogue utilisent l'orthographe "Shampoing"
+    // (un seul o). Ce simple écart cassait à la fois la recherche
+    // catalogue ET le filtrage par sous-chaîne de getHybridProducts(),
+    // même après avoir correctement identifié la catégorie "Cheveux".
+    // On normalise donc le mot-clé (et le product_term éventuel) vers
+    // l'orthographe réellement utilisée dans le catalogue.
+    $intentResult['keyword'] = $this->normalizeSpellingVariants($intentResult['keyword']);
+    if (!empty($intentResult['filters']['product_term'])) {
+        $intentResult['filters']['product_term'] = $this->normalizeSpellingVariants($intentResult['filters']['product_term']);
+    }
+
+    // CORRIGÉ : si le message original contenait de l'arabe, on utilise
+    // la traduction française pour la recherche si le keyword est vide
+    if (empty($intentResult['keyword']) && !empty($intentResult['translated_message'])) {
+        // Re-détecter l'intention sur la traduction pour avoir un keyword précis
+        $translatedIntent = $this->detectIntentWithGemini($intentResult['translated_message'], $apiKey, $availableCategories);
+        if (!empty($translatedIntent['keyword'])) {
+            $intentResult['keyword'] = $translatedIntent['keyword'];
+            $intentResult['filters'] = array_merge($intentResult['filters'], $translatedIntent['filters'] ?? []);
+        }
+    }
+
+    error_log('INTENTION DÉTECTÉE PAR GEMINI: ' . $intentResult['intent']
+        . ' / MOT-CLÉ: ' . $intentResult['keyword']
+        . ' / LANGUE: ' . $intentResult['language']
+        . ' / FILTRES: ' . print_r($intentResult['filters'], true));
+
+    // Court-circuit : salutation ou question hors-sujet -> réponse courte,
+    // sans passer par la recherche produit ni le prompt général (qui n'a pas
+    // de limite de longueur et peut partir sur un pavé, cf. "c'est quoi le monde").
+    if ($intentResult['intent'] === 'greeting' || $intentResult['intent'] === 'thanks' || $intentResult['intent'] === 'off_topic') {
+        $topCategories = $this->getTopCategoryNames($idLang, 7);
+        $shortPrompt = $this->buildShortPrompt(
+            $userMessage,
+            $intentResult['intent'],
+            $intentResult['language'],
+            $topCategories
+        );
+
+        error_log('INTENTION COURTE (' . $intentResult['intent'] . ') - PROMPT: ' . $shortPrompt);
+
+        $reply = $this->callGemini($shortPrompt, $apiKey);
+
+        $this->sendJsonResponse(['reply' => $reply]);
+    }
+
+    // Étape 2 : récupérer les produits
+    $totalCategoryCount = null;
+    $subCategoriesSuggestion = [];
+    $categoryNotFound = false;
+    $exactMatch = false;
+    $filters = $intentResult['filters'] ?? [];
+
+    if ($intentResult['intent'] === 'category') {
+        // CORRIGÉ : "keyword" doit maintenant être le nom exact d'une
+        // catégorie (voir le prompt d'intention durci plus bas) ; si
+        // jamais Gemini le sait avoir renvoyé quelque chose qui ne
+        // matche aucune catégorie, findCategoryIdByName() a de toute
+        // façon un repli par recherche partielle (stripos).
+        $idCategory = $this->findCategoryIdByName($intentResult['keyword'], $idLang);
+
+        if ($idCategory) {
+            $categoryData = $this->getProductsByCategory($idCategory, $idLang, 5, $filters);
+            $produits = $categoryData['produits'];
+            $totalCategoryCount = $categoryData['total'];
+
+            if ($totalCategoryCount > 30) {
+                $subCategoriesSuggestion = $this->getSubCategoryNames($idCategory, $idLang);
+            }
+        } else {
+            $categoryNotFound = true;
+            $produits = [];
+            $subCategoriesSuggestion = $this->getTopCategoryNames($idLang);
+        }
+    } else {
+        // CORRIGÉ (patch 1b) : RECHERCHE HYBRIDE multi-termes. Quand le
+        // client demande plusieurs types de produits distincts dans le
+        // même message (ex: "un carnet ou un coussin ?"),
+        // detectIntentWithGemini() renvoie désormais tous les termes
+        // dans 'keyword', séparés par une virgule (ou "ou"). On boucle
+        // sur chaque terme et on fusionne les résultats (dédupliqués
+        // par nom), au lieu de ne chercher que sur un seul mot-clé.
+        $searchTermsList = preg_split('/\s*,\s*|\s+ou\s+/i', $intentResult['keyword']);
+        $searchTermsList = array_values(array_filter(array_map('trim', $searchTermsList)));
+
+        if (count($searchTermsList) > 1) {
+            $produits = [];
+            $seenNames = [];
+            foreach ($searchTermsList as $term) {
+                $hybridResult = $this->getHybridProducts($term, $idLang, 5, $filters);
+                foreach ($hybridResult['produits'] as $p) {
+                    if (!in_array($p['nom'], $seenNames)) {
+                        $produits[] = $p;
+                        $seenNames[] = $p['nom'];
+                    }
+                }
+            }
+            // Plusieurs types de produits distincts demandés -> jamais le
+            // mode "confirmation unique" (exactMatch), même si l'un des
+            // termes a matché exactement un produit.
+            $exactMatch = false;
+        } else {
+            $hybridResult = $this->getHybridProducts($intentResult['keyword'], $idLang, 5, $filters);
+            $produits = $hybridResult['produits'];
+            $exactMatch = $hybridResult['exact_match'];
+        }
+    }
+
+    // Étape 3 : construire le prompt final
+    $prompt = $this->buildPrompt(
+        $userMessage,
+        $produits,
+        $intentResult['language'],
+        $totalCategoryCount,
+        $subCategoriesSuggestion,
+        $categoryNotFound,
+        null,
+        $filters,
+        $idLang,
+        $exactMatch
+    );
+
+    error_log('PRODUITS TROUVÉS: ' . print_r($produits, true));
+    if ($totalCategoryCount !== null) {
+        error_log('TOTAL RÉEL CATÉGORIE: ' . $totalCategoryCount . ' / SOUS-CATÉGORIES PROPOSÉES: ' . implode(', ', $subCategoriesSuggestion));
+    }
+    error_log('PROMPT ENVOYÉ: ' . $prompt);
+
+    $reply = $this->callGemini($prompt, $apiKey);
+
+    $this->sendJsonResponse(['reply' => $reply]);
+}
 
     /**
      * Extrait le texte utile d'une réponse Gemini en ignorant les "thought parts"
@@ -592,7 +667,7 @@ class MonChatbotChatModuleFrontController extends ModuleFrontController
                 continue;
             }
 
-            $result = Search::find($idLang, $keyword, 1, $limit, 'position', 'desc', false, true, $this->context);
+            $result = $this->searchCatalogJson($idLang, $keyword, $limit);
 
             if (!empty($result['result'])) {
                 foreach ($result['result'] as $item) {
@@ -628,7 +703,7 @@ class MonChatbotChatModuleFrontController extends ModuleFrontController
         // Si aucun produit trouvé, faire une recherche par type uniquement
         if (empty($produits) && !empty($type)) {
             error_log('RECHERCHE FALLBACK PAR TYPE: ' . $type);
-            $result = Search::find($idLang, $type, 1, $limit, 'position', 'desc', false, true, $this->context);
+            $result = $this->searchCatalogJson($idLang, $type, $limit);
             if (!empty($result['result'])) {
                 foreach ($result['result'] as $item) {
                     $quantity = (int) ($item['quantity'] ?? 0);
@@ -772,8 +847,8 @@ class MonChatbotChatModuleFrontController extends ModuleFrontController
 
         $produits = [];
 
-        // Étape 1 : Recherche exacte via Search::find()
-        $result = Search::find($idLang, $searchKeyword, 1, $limit * 2, 'position', 'desc', false, true, $this->context);
+        // Étape 1 : Recherche exacte dans le catalogue JSON
+        $result = $this->searchCatalogJson($idLang, $searchKeyword, $limit * 2);
 
         if (!empty($result['result'])) {
             foreach ($result['result'] as $item) {
@@ -797,8 +872,35 @@ class MonChatbotChatModuleFrontController extends ModuleFrontController
             }
         }
 
+        // CORRECTIF : si le nom d'un produit trouvé correspond quasi
+        // exactement au mot-clé demandé par le client (il a nommé un
+        // produit précis et il existe), on ne propose QUE ce produit
+        // (plus d'élargissement automatique à toute la catégorie) : le
+        // prompt final se contentera de le confirmer, puis proposera en
+        // une seule question de voir des alternatives si le client le
+        // souhaite, au lieu de lui déverser 4-5 produits non demandés.
+        $exactMatch = false;
+        if (!empty($produits)) {
+            $normalizedKeyword = $this->normalizeForMatch($searchKeyword);
+            foreach ($produits as $p) {
+                $normalizedName = $this->normalizeForMatch($p['nom']);
+                if ($normalizedName === $normalizedKeyword) {
+                    $exactMatch = true;
+                    $produits = [$p];
+                    break;
+                }
+                similar_text($normalizedName, $normalizedKeyword, $percent);
+                if ($percent >= 85.0) {
+                    $exactMatch = true;
+                    $produits = [$p];
+                    break;
+                }
+            }
+        }
+
         // Étape 2 : Si peu de résultats, élargir à la catégorie
-        if (count($produits) < 3) {
+        // (sauté si une correspondance exacte a déjà été trouvée)
+        if (!$exactMatch && count($produits) < 3) {
             $categoryName = $this->mapKeywordToCategory($searchKeyword);
 
             if ($categoryName) {
@@ -820,7 +922,9 @@ class MonChatbotChatModuleFrontController extends ModuleFrontController
             if ($categoryId) {
                 $category = new Category($categoryId, $idLang);
                 if (Validate::isLoadedObject($category)) {
-                    $productsRaw = $category->getProducts($idLang, 1, 100, 'name', 'asc');
+                    // CORRECTIF : recherche dans le catalogue JSON par NOM de
+                    // catégorie, plus Category::getProducts() en direct.
+                    $productsRaw = $this->getCatalogProductsByCategoryName($idLang, $category->name, 100);
                     $existingNames = array_column($produits, 'nom');
 
                     $words = explode(' ', strtolower($searchKeyword));
@@ -881,14 +985,102 @@ class MonChatbotChatModuleFrontController extends ModuleFrontController
             $produits = array_slice($produits, 0, $limit);
         }
 
-        return $produits;
+        return ['produits' => $produits, 'exact_match' => $exactMatch];
     }
+
+    /**
+     * Normalise une chaîne pour comparaison de similarité (minuscules,
+     * accents simplifiés, espaces/ponctuation réduits à un seul espace).
+     */
+    private function normalizeForMatch($text)
+    {
+        $text = mb_strtolower(trim((string) $text));
+        $text = preg_replace('/[^\p{L}\p{N}]+/u', ' ', $text);
+        $text = preg_replace('/\s+/', ' ', $text);
+        return trim($text);
+    }
+
+    /**
+     * CORRECTIF : normalise les variantes orthographiques d'un même mot vers
+     * l'orthographe réellement utilisée dans les noms produits du catalogue.
+     * Gemini corrige les fautes de frappe vers l'orthographe "standard", qui
+     * peut différer de celle utilisée dans le catalogue (ex: "shampooing"
+     * standard vs "Shampoing" dans nos produits) : sans cette normalisation,
+     * ni la recherche catalogue ni le filtrage par sous-chaîne ne matchent,
+     * même quand la bonne catégorie a été identifiée.
+     * À compléter si d'autres écarts similaires sont détectés.
+     */
+    private function normalizeSpellingVariants($term)
+    {
+        if (empty($term)) {
+            return $term;
+        }
+
+        $variants = [
+            'shampooing' => 'shampoing',
+            'après-shampooing' => 'après-shampoing',
+            'apres-shampooing' => 'apres-shampoing',
+        ];
+
+        return str_ireplace(array_keys($variants), array_values($variants), $term);
+    }
+
+    /**
+ * Détecte si le message est vague (ne contient pas d'indice produit)
+ */
+private function isVagueMessage($message)
+{
+    $vaguePatterns = [
+        '/ce produit/i',
+        '/cet article/i',
+        '/ce truc/i',
+        '/cette chose/i',
+        '/un produit/i',
+        '/un article/i',
+        '/le produit/i',
+        '/l\'article/i',
+        '/alternative/i',
+        '/ce que/i',
+        '/ça/i',
+    ];
+
+    foreach ($vaguePatterns as $pattern) {
+        if (preg_match($pattern, $message)) {
+            // Vérifier qu'il n'y a pas de mot-clé produit à côté
+            $productKeywords = [
+                'gel', 'shampoing', 'savon', 'crème', 'dentifrice',
+                't-shirt', 'pull', 'carnet', 'coussin', 'mug',
+                'affiche', 'brosse', 'masque', 'sérum', 'lotion',
+                'baume', 'huile', 'exfoliant', 'nettoyant',
+                'parfum', 'lait', 'tonique', 'soin', 'huile'
+            ];
+
+            $hasProductKeyword = false;
+            foreach ($productKeywords as $keyword) {
+                if (stripos($message, $keyword) !== false) {
+                    $hasProductKeyword = true;
+                    break;
+                }
+            }
+
+            if (!$hasProductKeyword) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
 
     /**
      * Mapping sémantique : associe un terme de recherche à une catégorie existante
      */
     private function mapKeywordToCategory($keyword)
     {
+        if (empty($keyword)) {
+            return null;
+        }
+
         $lowerKeyword = strtolower($keyword);
 
         $mapping = [
@@ -916,6 +1108,27 @@ class MonChatbotChatModuleFrontController extends ModuleFrontController
             'cheveux' => 'Cheveux',
             'dentaire' => 'Dentaire',
             'visage' => 'Visage',
+            // CORRIGÉ (patch 1c) : vocabulaire non-beauté ajouté, pour que le
+            // catalogue élargi (Papeterie, Accessoires de maison, Art,
+            // Vêtements Hommes/Femmes...) soit lui aussi reconnu par
+            // l'élargissement par catégorie, et pas seulement le vocabulaire
+            // beauté/hygiène d'origine.
+            // ATTENTION : ajuste les valeurs ci-dessous aux noms exacts des
+            // sous-catégories tels qu'affichés dans le back-office si besoin.
+            'carnet' => 'Papeterie',
+            'notes' => 'Papeterie',
+            'papeterie' => 'Papeterie',
+            'coussin' => 'Accessoires de maison',
+            'mug' => 'Accessoires de maison',
+            'tasse' => 'Accessoires de maison',
+            'affiche' => 'Art',
+            'illustration' => 'Art',
+            'poster' => 'Art',
+            't-shirt' => 'Femmes',
+            'tshirt' => 'Femmes',
+            'pull' => 'Femmes',
+            'vêtement' => 'Vêtements',
+            'vetement' => 'Vêtements',
         ];
 
         foreach ($mapping as $key => $category) {
@@ -929,7 +1142,10 @@ class MonChatbotChatModuleFrontController extends ModuleFrontController
 
     /**
      * Appelle Gemini une première fois pour détecter l'intention
-     * CORRIGÉ : utilise extractGeminiText() + thinkingConfig + maxOutputTokens
+     * CORRIGÉ :
+     *  - utilise extractGeminiText() + thinkingConfig + maxOutputTokens
+     *  - traduit automatiquement le message en français si nécessaire
+     *  - retourne la traduction dans 'translated_message'
      */
     private function detectIntentWithGemini($message, $apiKey, $availableCategories = [])
     {
@@ -937,40 +1153,74 @@ class MonChatbotChatModuleFrontController extends ModuleFrontController
             ? implode(', ', $availableCategories)
             : '(liste indisponible)';
 
-        $instruction = "Tu es un analyseur d'intention pour un chatbot e-commerce. "
-            . "Analyse le message suivant et réponds UNIQUEMENT avec un objet JSON strict, "
-            . "sans texte autour, sans balises markdown, sous cette forme exacte :\n"
-            . '{"intent": "category"|"search"|"greeting"|"thanks"|"off_topic", "keyword": "...", "language": "...", "filters": {"price": "low"|"medium"|"high"|null, "skin_type": "...", "concern": "...", "product_term": "..."}}' . "\n\n"
-            . "Voici les catégories réellement disponibles dans notre catalogue : "
-            . $categoriesList . ". "
-            . "Nos fiches produits sont génériques (pas de vocabulaire médical ou de "
-            . "problème de peau/cheveux précis dedans) : un mot comme \"acné\", \"rides\", "
-            . "\"pellicules\" ou \"cheveux gras\" ne sera JAMAIS trouvé tel quel dans le "
-            . "catalogue.\n\n"
-            . "Règles :\n"
-            . "- \"intent\" = \"greeting\" si le message est juste une salutation/politesse "
-            . "d'ouverture ou neutre (bonjour, salut, ça va, au revoir...) sans demande de produit\n"
-            . "- \"intent\" = \"thanks\" si le client remercie ou clôture l'échange "
-            . "(merci, c'est parfait, super, ok merci, top...) après avoir reçu une réponse\n"
-            . "- \"intent\" = \"off_topic\" si le message n'a AUCUN rapport avec la boutique, "
-            . "les produits ou un besoin de soin/hygiène (question générale, philosophique, "
-            . "météo, actualité, blague, question personnelle sur le bot, etc.)\n"
-            . "- \"intent\" = \"category\" si le client demande TOUS les produits d'une catégorie/rayon\n"
-            . "- \"intent\" = \"category\" aussi si le client exprime un besoin, un problème ou un symptôme\n"
-            . "- \"intent\" = \"search\" si le client cherche un produit précis ou un type de produit\n"
-            . "- pour \"intent\": \"search\", \"keyword\" doit être nettoyé, corrigé des fautes de frappe\n"
-            . "- pour \"intent\" = \"category\" (y compris quand c'est un besoin/problème), "
-            . "\"keyword\" DOIT être le nom EXACT d'une catégorie parmi celles listées "
-            . "ci-dessus (jamais le nom du symptôme lui-même) ; le symptôme va dans "
-            . "'filters.concern' ou 'filters.skin_type', jamais dans 'keyword'\n"
-            . "- pour \"greeting\"/\"off_topic\", \"keyword\" peut rester vide (\"\")\n"
-            . "- \"language\" doit être le nom complet, en français, de la langue/variante\n"
-            . "- Détecte les critères implicites du client dans 'filters'\n"
-            . "- si en plus de la catégorie le client mentionne un TYPE de produit précis "
-            . "(ex: \"dentifrice\" dans \"vous avez quoi en dentifrice ?\"), mets ce terme "
-            . "dans 'filters.product_term' pour qu'on puisse trier les résultats par "
-            . "pertinence plutôt que par ordre alphabétique\n\n"
-            . "Message du client : " . $message;
+        $instruction = "Tu es un analyseur d'intention pour un chatbot e-commerce.
+
+            Le message suivant peut être écrit dans n'importe quelle langue
+            (français, anglais, espagnol, darija, arabe classique, etc.).
+
+            Étape 1 : Traduis le message du client en FRANÇAIS.
+            Étape 2 : Analyse l'intention sur la base de la traduction française.
+
+            Réponds UNIQUEMENT avec un objet JSON strict, sans texte autour,
+            sous cette forme exacte :
+            {
+                \"intent\": \"category\"|\"search\"|\"greeting\"|\"thanks\"|\"off_topic\",
+                \"keyword\": \"...\",
+                \"language\": \"...\",
+                \"filters\": {
+                    \"price\": \"low\"|\"medium\"|\"high\"|null,
+                    \"skin_type\": \"...\",
+                    \"concern\": \"...\",
+                    \"product_term\": \"...\"
+                },
+                \"translated_message\": \"...\"
+            }
+
+            Règles :
+            - \"translated_message\" : la traduction COMPLÈTE en français du message original
+            - \"keyword\" : le mot-clé de recherche en français (extrait du message traduit)
+            - \"language\" : la langue D'ORIGINE du client (français, anglais, espagnol, darija, arabe classique...)
+            - \"filters\" : extraits du message traduit
+
+            Voici les catégories réellement disponibles dans notre catalogue : " . $categoriesList . ".
+            Nos fiches produits sont génériques (pas de vocabulaire médical ou de
+            problème de peau/cheveux précis dedans) : un mot comme \"acné\", \"rides\",
+            \"pellicules\" ou \"cheveux gras\" ne sera JAMAIS trouvé tel quel dans le catalogue.
+
+            Exemples :
+            Message original : \"شنو عندكم من بلسم للشعر؟\"
+            → translated_message : \"Qu'avez-vous comme baume pour les cheveux ?\"
+            → keyword : \"baume cheveux\"
+            → intent : \"search\"
+            → language : \"darija\"
+
+            Message original : \"¿Tienen champú?\"
+            → translated_message : \"Avez-vous du shampoing ?\"
+            → keyword : \"shampoing\"
+            → intent : \"search\"
+            → language : \"espagnol\"
+
+            Message original : \"je cherche un carnet ou un coussin\"
+            → translated_message : \"je cherche un carnet ou un coussin\"
+            → keyword : \"carnet, coussin\"
+            → intent : \"search\"
+
+            Règles d'intention :
+            - \"intent\" = \"greeting\" si le message est juste une salutation/politesse
+            - \"intent\" = \"thanks\" si le client remercie ou clôture l'échange
+            - \"intent\" = \"off_topic\" si le message n'a AUCUN rapport avec la boutique
+            - \"intent\" = \"category\" si le client demande TOUS les produits d'une catégorie
+            - \"intent\" = \"category\" aussi si le client exprime un besoin/problème/symptôme
+            - \"intent\" = \"search\" si le client cherche un produit précis ou un type de produit
+
+            - pour \"intent\": \"search\", \"keyword\" doit être nettoyé, corrigé des fautes de frappe
+            - si le client demande PLUSIEURS types de produits distincts dans le même message,
+              mets TOUS les termes dans 'keyword' séparés par une virgule
+            - IMPORTANT : \"keyword\" et \"filters.product_term\" DOIVENT TOUJOURS être en français
+            - pour \"greeting\"/\"off_topic\", \"keyword\" peut rester vide (\"\")
+            - Détecte les critères implicites du client dans 'filters'
+
+            Message du client : " . $message;
 
         $response = $this->callGeminiRaw($instruction, $apiKey);
 
@@ -980,7 +1230,13 @@ class MonChatbotChatModuleFrontController extends ModuleFrontController
 
         if ($response === false) {
             error_log('ÉCHEC APPEL GEMINI (intent) après retry : fallback sur recherche brute');
-            return ['intent' => 'search', 'keyword' => $message, 'language' => 'français', 'filters' => []];
+            return [
+                'intent' => 'search',
+                'keyword' => $message,
+                'language' => 'français',
+                'filters' => [],
+                'translated_message' => $message,
+            ];
         }
 
         $cleaned = preg_replace('/^```(json)?|```$/m', '', trim($response));
@@ -990,20 +1246,38 @@ class MonChatbotChatModuleFrontController extends ModuleFrontController
 
         if (!is_array($json) || !isset($json['intent'], $json['keyword'])) {
             error_log('JSON INVALIDE OU INCOMPLET (intent) -> fallback sur recherche brute. Réponse reçue : ' . $cleaned);
-            return ['intent' => 'search', 'keyword' => $message, 'language' => 'français', 'filters' => []];
+            return [
+                'intent' => 'search',
+                'keyword' => $message,
+                'language' => 'français',
+                'filters' => [],
+                'translated_message' => $message,
+            ];
         }
 
         $allowedIntents = ['category', 'search', 'greeting', 'thanks', 'off_topic'];
         $intent = in_array($json['intent'], $allowedIntents, true) ? $json['intent'] : 'search';
-        $keyword = trim((string) $json['keyword']);
+        $keyword = trim((string) ($json['keyword'] ?? ''));
         $language = trim((string) ($json['language'] ?? 'français'));
         $filters = $json['filters'] ?? [];
+        $translatedMessage = trim((string) ($json['translated_message'] ?? $message));
 
         if (empty($language)) {
             $language = 'français';
         }
 
-        return ['intent' => $intent, 'keyword' => $keyword, 'language' => $language, 'filters' => $filters];
+        // Si le keyword est vide mais qu'on a une traduction, on l'utilise
+        if (empty($keyword) && !empty($translatedMessage)) {
+            $keyword = $translatedMessage;
+        }
+
+        return [
+            'intent' => $intent,
+            'keyword' => $keyword,
+            'language' => $language,
+            'filters' => $filters,
+            'translated_message' => $translatedMessage,
+        ];
     }
 
     /**
@@ -1079,7 +1353,9 @@ class MonChatbotChatModuleFrontController extends ModuleFrontController
             return ['produits' => [], 'total' => 0];
         }
 
-        $totalCount = (int) $category->getProducts($idLang, 1, 1, 'name', 'asc', true);
+        // CORRECTIF : total et liste de produits lus dans le catalogue JSON
+        // (par nom de catégorie), plus Category::getProducts() en direct.
+        $totalCount = $this->countCatalogProductsByCategoryName($idLang, $category->name);
 
         if ($totalCount === 0) {
             return ['produits' => [], 'total' => 0];
@@ -1088,7 +1364,7 @@ class MonChatbotChatModuleFrontController extends ModuleFrontController
         // Pool de récupération : large pour laisser une vraie marge au
         // filtrage, mais plafonné à 50 pour rester raisonnable en mémoire/temps.
         $poolSize = min($totalCount, 50);
-        $productsRaw = $category->getProducts($idLang, 1, $poolSize, 'name', 'asc');
+        $productsRaw = $this->getCatalogProductsByCategoryName($idLang, $category->name, $poolSize);
 
         if (empty($productsRaw)) {
             return ['produits' => [], 'total' => $totalCount];
@@ -1139,95 +1415,200 @@ class MonChatbotChatModuleFrontController extends ModuleFrontController
     }
 
     /**
-     * Récupère les noms des catégories actives de premier niveau
-     */
-    private function getTopCategoryNames($idLang, $limit = 15)
-    {
-        $idRootCategory = (int) Configuration::get('PS_ROOT_CATEGORY');
-        $rootCategory = new Category($idRootCategory, $idLang);
-
-        if (!Validate::isLoadedObject($rootCategory)) {
-            return [];
-        }
-
-        $subCategories = $rootCategory->getSubCategories($idLang, true);
-
-        if (empty($subCategories)) {
-            return [];
-        }
-
-        $names = [];
-        foreach ($subCategories as $subCat) {
-            if (isset($subCat['name'])) {
-                $names[] = $subCat['name'];
-            }
-            if (count($names) >= $limit) {
-                break;
-            }
-        }
-
-        return $names;
+ * Récupère les noms des catégories actives de premier niveau
+ * CORRIGÉ pour la structure PrestaShop standard
+ */
+private function getTopCategoryNames($idLang, $limit = 15)
+{
+    $idRootCategory = (int) Configuration::get('PS_ROOT_CATEGORY');
+    $idHomeCategory = (int) Configuration::get('PS_HOME_CATEGORY');
+    
+    error_log('getTopCategoryNames - ID ROOT: ' . $idRootCategory . ' / ID HOME: ' . $idHomeCategory);
+    
+    // Récupérer TOUTES les catégories actives
+    $allCategories = Category::getCategories($idLang, true, false);
+    
+    if (empty($allCategories)) {
+        error_log('getTopCategoryNames - AUCUNE CATÉGORIE TROUVÉE');
+        return $this->getFallbackCategories();
     }
-
-    /**
-     * Récupère les noms de TOUTES les catégories actives du catalogue
-     */
-    private function getAllCategoryNames($idLang, $limit = 40)
-    {
-        $idRootCategory = (int) Configuration::get('PS_ROOT_CATEGORY');
-        $idHomeCategory = (int) Configuration::get('PS_HOME_CATEGORY');
-
-        $allCategories = Category::getCategories($idLang, true, false);
-
-        $names = [];
+    
+    error_log('getTopCategoryNames - Nombre total de catégories: ' . count($allCategories));
+    
+    $names = [];
+    $processed = [];
+    
+    foreach ($allCategories as $cat) {
+        $idCategory = (int) ($cat['id_category'] ?? 0);
+        $idParent = (int) ($cat['id_parent'] ?? 0);
+        $name = trim((string) ($cat['name'] ?? ''));
+        $levelDepth = (int) ($cat['level_depth'] ?? 0);
+        
+        // Ignorer les catégories système
+        if ($idCategory === $idRootCategory || $idCategory === $idHomeCategory) {
+            continue;
+        }
+        
+        if ($name === '' || $name === 'Accueil' || $name === 'Home' || $name === 'Root') {
+            continue;
+        }
+        
+        // Une catégorie de premier niveau a soit :
+        // - id_parent = idHomeCategory (cas standard PrestaShop)
+        // - id_parent = idRootCategory
+        // - level_depth = 2 (si la racine est niveau 1)
+        $isTopLevel = (
+            $idParent === $idHomeCategory || 
+            $idParent === $idRootCategory || 
+            $levelDepth === 2
+        );
+        
+        if ($isTopLevel) {
+            // Éviter les doublons
+            if (!in_array($name, $processed)) {
+                $processed[] = $name;
+                $names[] = $name;
+                
+                if (count($names) >= $limit) {
+                    break;
+                }
+            }
+        }
+    }
+    
+    // Si toujours aucune catégorie trouvée, prendre TOUTES les catégories non-système
+    if (empty($names)) {
         foreach ($allCategories as $cat) {
             $idCategory = (int) ($cat['id_category'] ?? 0);
-
+            $name = trim((string) ($cat['name'] ?? ''));
+            
             if ($idCategory === $idRootCategory || $idCategory === $idHomeCategory) {
                 continue;
             }
-
-            if (isset($cat['name']) && $cat['name'] !== '') {
-                $names[] = $cat['name'];
+            
+            if ($name === '' || $name === 'Accueil' || $name === 'Home' || $name === 'Root') {
+                continue;
             }
-
-            if (count($names) >= $limit) {
-                break;
+            
+            if (!in_array($name, $names)) {
+                $names[] = $name;
+                if (count($names) >= $limit) {
+                    break;
+                }
             }
         }
-
-        return $names;
     }
+    
+    error_log('getTopCategoryNames - CATÉGORIES TROUVÉES: ' . implode(', ', $names));
+    
+    // Fallback si toujours vide
+    if (empty($names)) {
+        return $this->getFallbackCategories();
+    }
+    
+    return $names;
+}
+   /**
+ * Récupère les noms de TOUTES les catégories actives du catalogue
+ * CORRIGÉ avec fallback
+ */
+private function getAllCategoryNames($idLang, $limit = 40)
+{
+    $idRootCategory = (int) Configuration::get('PS_ROOT_CATEGORY');
+    $idHomeCategory = (int) Configuration::get('PS_HOME_CATEGORY');
+
+    $allCategories = Category::getCategories($idLang, true, false);
+
+    if (empty($allCategories)) {
+        error_log('getAllCategoryNames - AUCUNE CATÉGORIE TROUVÉE');
+        return $this->getFallbackCategories();
+    }
+
+    $names = [];
+    foreach ($allCategories as $cat) {
+        $idCategory = (int) ($cat['id_category'] ?? 0);
+        $name = trim((string) ($cat['name'] ?? ''));
+
+        if ($idCategory === $idRootCategory || $idCategory === $idHomeCategory) {
+            continue;
+        }
+
+        if ($name === '' || $name === 'Accueil' || $name === 'Home' || $name === 'Root') {
+            continue;
+        }
+
+        if (!in_array($name, $names)) {
+            $names[] = $name;
+        }
+
+        if (count($names) >= $limit) {
+            break;
+        }
+    }
+
+    error_log('getAllCategoryNames - CATÉGORIES TROUVÉES: ' . implode(', ', $names));
+
+    // Fallback si toujours vide
+    if (empty($names)) {
+        return $this->getFallbackCategories();
+    }
+
+    return $names;
+}
 
     /**
      * Récupère les noms des sous-catégories actives d'une catégorie donnée
      */
-    private function getSubCategoryNames($idCategory, $idLang, $limit = 10)
-    {
-        $category = new Category($idCategory, $idLang);
+    /**
+ * Récupère les noms des sous-catégories actives d'une catégorie donnée
+ */
+private function getSubCategoryNames($idCategory, $idLang, $limit = 10)
+{
+    $category = new Category($idCategory, $idLang);
 
-        if (!Validate::isLoadedObject($category)) {
-            return [];
-        }
-
-        $subCategories = $category->getSubCategories($idLang, true);
-
-        if (empty($subCategories)) {
-            return [];
-        }
-
-        $names = [];
-        foreach ($subCategories as $subCat) {
-            if (isset($subCat['name'])) {
-                $names[] = $subCat['name'];
-            }
-            if (count($names) >= $limit) {
-                break;
-            }
-        }
-
-        return $names;
+    if (!Validate::isLoadedObject($category)) {
+        return [];
     }
+
+    $subCategories = $category->getSubCategories($idLang, true);
+
+    if (empty($subCategories)) {
+        return [];
+    }
+
+    $names = [];
+    foreach ($subCategories as $subCat) {
+        if (isset($subCat['name'])) {
+            $name = trim((string) $subCat['name']);
+            if ($name !== '' && $name !== 'Accueil' && $name !== 'Home' && $name !== 'Root') {
+                $names[] = $name;
+            }
+        }
+        if (count($names) >= $limit) {
+            break;
+        }
+    }
+
+    return $names;
+}
+    /**
+ * Liste de fallback des catégories (utilisée si la récupération PrestaShop échoue)
+ */
+private function getFallbackCategories()
+{
+    $fallback = [
+        'Nettoyants Corps',
+        'Vêtements',
+        'Accessoires',
+        'Art',
+        'Dentaire',
+        'Visage',
+        'Cheveux'
+    ];
+    
+    error_log('UTILISATION DU FALLBACK CATÉGORIES');
+    return $fallback;
+}
 
     /**
      * Applique les filtres détectés par Gemini sur une liste de produits
@@ -1297,6 +1678,7 @@ class MonChatbotChatModuleFrontController extends ModuleFrontController
      * Mots-clés catalogue associés à un "concern" (problème/besoin) détecté par Gemini.
      * CORRIGÉ : "anti-rides"/"antiride" ajoutés — le nom produit réel du
      * catalogue est "Anti-Rides", qui ne matchait aucun des mots-clés avant.
+     * CORRIGÉ : retrait de 'sérum' de la liste acné car trop large.
      */
     private function keywordsForConcern($concern)
     {
@@ -1309,7 +1691,8 @@ class MonChatbotChatModuleFrontController extends ModuleFrontController
             return ['hydratant', 'nourrissant', 'réparateur', 'beurre', 'karité', 'amande', 'aloe'];
         }
         if (stripos($concern, 'acné') !== false || stripos($concern, 'bouton') !== false) {
-            return ['purifiant', 'exfoliant', 'argile', 'sérum'];
+            // CORRIGÉ : retrait de 'sérum' car trop large — matche les sérums anti-âge et vitamine C sans rapport avec l'acné
+            return ['purifiant', 'exfoliant', 'argile'];
         }
         if (stripos($concern, 'ride') !== false || stripos($concern, 'age') !== false) {
             return ['anti-âge', 'anti-age', 'anti-rides', 'antiride', 'régénérant', 'hyaluronique'];
@@ -1428,8 +1811,39 @@ class MonChatbotChatModuleFrontController extends ModuleFrontController
         return $instruction . "\n\nMessage de l'utilisateur : " . $message;
     }
 
-    private function buildPrompt($message, $produits, $language = 'français', $totalCategoryCount = null, $subCategories = [], $categoryNotFound = false, $imageKeyword = null, $filters = [], $idLang = null)
+    private function buildPrompt($message, $produits, $language = 'français', $totalCategoryCount = null, $subCategories = [], $categoryNotFound = false, $imageKeyword = null, $filters = [], $idLang = null, $exactMatch = false)
     {
+        // CORRECTIF : quand le client a demandé un produit précis et qu'on
+        // l'a trouvé exactement (nom quasi identique), on ne veut plus lui
+        // déverser 4-5 alternatives non demandées. On confirme juste ce
+        // produit, puis on propose EN UNE SEULE QUESTION de voir des
+        // alternatives s'il le souhaite - à lui de relancer s'il veut en
+        // voir plus.
+        if ($exactMatch && count($produits) === 1) {
+            $p = $produits[0];
+            $instruction = "Tu es le conseiller produit de cette boutique en ligne, avec un ton "
+                . "chaleureux et naturel, jamais robotique. "
+                . "Le client a demandé précisément ce produit, et on l'a trouvé en stock. "
+                . "Confirme-le simplement (nom, prix, une très courte raison de l'apprécier), "
+                . "en 1 à 2 phrases MAXIMUM, en texte brut (pas de Markdown, pas de liste à puces). "
+                . "NE liste PAS d'autres produits toi-même. "
+                . "Termine PAR UNE SEULE question courte proposant de voir des alternatives "
+                . "similaires si ça l'intéresse (ex: \"Voulez-vous voir d'autres options similaires ?\"), "
+                . "sans en nommer aucune. "
+                . "Le client a écrit son message en " . $language . ". "
+                . "Ta réponse ENTIÈRE doit être rédigée en " . $language . ".\n\n"
+                . "Produit trouvé :\n- " . $p['nom'];
+            if (!empty($p['marque'])) {
+                $instruction .= ' (' . $p['marque'] . ')';
+            }
+            $instruction .= ', ' . $p['prix'];
+            if (!empty($p['description'])) {
+                $instruction .= ' : ' . $p['description'];
+            }
+
+            return $instruction . "\n\nMessage de l'utilisateur : " . $message;
+        }
+
         $instruction = "Tu es le conseiller produit de cette boutique en ligne, avec un ton chaleureux, "
             . "naturel et vivant, comme un humain compétent qui aime vraiment ce qu'il vend, "
             . "jamais robotique ni scolaire. "
@@ -1470,7 +1884,15 @@ class MonChatbotChatModuleFrontController extends ModuleFrontController
                 $instruction .= " Catégories : " . implode(', ', $subCategories) . ".\n";
             }
         } elseif ($totalCategoryCount !== null && $totalCategoryCount > count($produits)) {
-            $instruction .= " Il y a " . $totalCategoryCount . " produits dans cette catégorie, mais seuls les " . count($produits) . " premiers sont listés. Précise-le au client.\n";
+            $instruction .= " Il y a " . $totalCategoryCount . " produits dans cette catégorie au total, mais seuls les " . count($produits) . " premiers sont listés.\n";
+            if (!empty($filters['concern']) || !empty($filters['skin_type'])) {
+                // CORRIGÉ (patch 4) : sans cette précision, Gemini pouvait
+                // laisser entendre que TOUS les $totalCategoryCount produits
+                // de la catégorie correspondaient au besoin exprimé par le
+                // client, alors que ce total porte sur toute la catégorie et
+                // pas seulement sur les produits filtrés par concern/skin_type.
+                $instruction .= " ATTENTION : ce total de " . $totalCategoryCount . " correspond à TOUTE la catégorie, PAS uniquement aux produits adaptés au besoin exprimé. Ne dis JAMAIS que les " . $totalCategoryCount . " produits sont adaptés — seuls ceux listés ci-dessous correspondent au filtre.\n";
+            }
             if (!empty($subCategories)) {
                 $instruction .= " Sous-catégories : " . implode(', ', $subCategories) . ".\n";
             }
@@ -1479,7 +1901,7 @@ class MonChatbotChatModuleFrontController extends ModuleFrontController
         if (empty($produits)) {
             $listeProduits = "(Aucun produit trouvé pour cette recherche dans le catalogue.)";
             if ($idLang) {
-                $categories = $this->getTopCategoryNames($idLang, 5);
+                $categories = $this->getTopCategoryNames($idLang, 10);
                 if (!empty($categories)) {
                     $listeProduits .= " Découvrez nos catégories : " . implode(', ', $categories) . ".";
                 }
@@ -1663,5 +2085,289 @@ class MonChatbotChatModuleFrontController extends ModuleFrontController
         header('Content-Type: application/json');
         echo json_encode($data);
         exit;
+    }
+
+    // ============================================================
+    // CORRECTIF : recherche via le catalogue JSON (consigne encadrant)
+    // ------------------------------------------------------------
+    // Le chatbot ne tape plus la base à chaque message pour chercher des
+    // produits (Search::find() / Category::getProducts()) : il cherche
+    // dans le fichier catalog_<idLang>.json généré par
+    // CatalogJsonExporter, régénéré automatiquement à chaque
+    // ajout/modif/suppression de produit ou de catégorie (hooks dans
+    // monchatbot.php).
+    //
+    // Le STOCK et le PRIX restent volontairement vérifiés EN DIRECT en
+    // base pour les candidats retenus par la recherche JSON (via
+    // StockAvailable::getQuantityAvailableByProduct() ici, et
+    // getPriceTTC() déjà existant plus haut dans ce fichier) : ce sont
+    // les deux seules données qui changent en temps réel (commande,
+    // promotion), le JSON ne doit donc jamais servir de source de vérité
+    // pour elles, sous peine de recommander un produit en rupture ou à un
+    // prix périmé.
+    // ============================================================
+
+    /**
+     * Charge le catalogue JSON pour une langue donnée, en le mettant en
+     * cache pour le reste de la requête HTTP (une seule lecture disque
+     * même si plusieurs fonctions de recherche sont appelées à la suite).
+     */
+    private function loadCatalogJson($idLang)
+    {
+        static $cache = [];
+
+        if (isset($cache[$idLang])) {
+            return $cache[$idLang];
+        }
+
+        $path = CatalogJsonExporter::getJsonPath($idLang);
+
+        if (!is_file($path)) {
+            error_log('CATALOGUE JSON INTROUVABLE (' . $path . ') - régénération à la volée');
+            CatalogJsonExporter::generate($idLang);
+        }
+
+        $raw = @file_get_contents($path);
+        $data = $raw ? json_decode($raw, true) : null;
+        $products = is_array($data) && isset($data['products']) ? $data['products'] : [];
+
+        $cache[$idLang] = $products;
+        return $products;
+    }
+
+    /**
+     * Convertit une entrée du catalogue JSON vers le format attendu par
+     * le reste du code (mêmes clés que celles issues auparavant de
+     * Search::find() / Category::getProducts()), en y ajoutant le stock
+     * réel vérifié en direct en base. Retourne null si le produit est en
+     * rupture (le candidat est alors écarté).
+     */
+    private function catalogEntryToItem(array $entry)
+    {
+        $idProduct = (int) ($entry['id_product'] ?? 0);
+        $quantity = (int) StockAvailable::getQuantityAvailableByProduct($idProduct);
+
+        if ($quantity <= 0) {
+            return null;
+        }
+
+        return [
+            'id_product' => $idProduct,
+            'name' => $entry['nom'] ?? '',
+            'quantity' => $quantity,
+            'price_amount' => $entry['prix_ht_catalogue'] ?? 0,
+            'price' => $entry['prix_ht_catalogue'] ?? 0,
+            'manufacturer_name' => $entry['marque'] ?? '',
+            'description_short' => $entry['description'] ?? '',
+            'description' => $entry['description_longue'] ?? '',
+        ];
+    }
+
+    /**
+     * CORRIGÉ : Recherche par mot-clé dans le catalogue JSON (remplace
+     * Search::find()). Retourne la même forme ['result' => [...]] pour
+     * rester compatible avec le code appelant existant.
+     *
+     * Avant, la recherche faisait un stripos($haystack, $kw) sur le mot-clé
+     * entier comme une seule chaîne continue. Cela échoue pour les requêtes
+     * multi-mots comme "gel douche menthe" car la sous-chaîne exacte n'existe
+     * pas dans le nom du produit (ex: "Gel Douche Purifiant Menthe Fraîche").
+     * On découpe désormais le mot-clé en mots et on vérifie qu'au moins un mot
+     * (ou tous les mots significatifs) est présent dans le texte du produit.
+     */
+    private function searchCatalogJson($idLang, $keyword, $limit = 10)
+    {
+        $keyword = trim((string) $keyword);
+        if ($keyword === '' || mb_strlen($keyword) < 2) {
+            return ['result' => []];
+        }
+
+        $catalog = $this->loadCatalogJson($idLang);
+        if (empty($catalog)) {
+            return ['result' => []];
+        }
+
+        // Découper le mot-clé en mots individuels
+        $words = preg_split('/\s+/', mb_strtolower($keyword));
+
+        // CORRIGÉ : filtre des mots vides (stop words) comme déjà fait dans getHybridProducts()
+        $stopWords = ['pour', 'contre', 'sans', 'avec', 'de', 'des', 'du', 'un', 'une', 'et', 'ou', 'le', 'la', 'les', 'si', 'pas', 'plus', 'moins', 'j\'ai', 'je', 'tu', 'il', 'elle', 'on', 'nous', 'vous', 'ils', 'elles', 'me', 'te', 'se', 'ne', 'que', 'qui', 'quoi', 'dont', 'où', 'comment', 'pourquoi', 'est', 'sont', 'était', 'étaient', 'sera', 'seront'];
+
+        // Filtrer les mots trop courts (< 2 caractères) et les stop words
+        $words = array_filter($words, function($w) use ($stopWords) {
+            return mb_strlen($w) >= 2 && !in_array($w, $stopWords);
+        });
+
+        // Si après filtrage il n'y a plus de mots, on tente une recherche avec le mot-clé original
+        // en ne filtrant que les mots de moins de 2 caractères (pas de stop words pour ne pas bloquer)
+        if (empty($words)) {
+            $words = array_filter(preg_split('/\s+/', mb_strtolower($keyword)), function($w) {
+                return mb_strlen($w) >= 2;
+            });
+        }
+
+        // Si toujours aucun mot, on abandonne
+        if (empty($words)) {
+            return ['result' => []];
+        }
+
+        $scored = [];
+
+        foreach ($catalog as $entry) {
+            $nom = mb_strtolower($entry['nom'] ?? '');
+            $categories = implode(' ', array_map('mb_strtolower', $entry['categories'] ?? []));
+            $desc = mb_strtolower(($entry['description'] ?? '') . ' ' . ($entry['description_longue'] ?? ''));
+            $marque = mb_strtolower($entry['marque'] ?? '');
+
+            $haystack = $nom . ' ' . $marque . ' ' . $categories . ' ' . $desc;
+
+            // Vérifier si au moins un mot significatif est présent
+            $matchFound = false;
+            foreach ($words as $w) {
+                if (mb_stripos($haystack, $w) !== false) {
+                    $matchFound = true;
+                    break;
+                }
+            }
+
+            // Si on a plusieurs mots, exiger qu'au moins 2 mots soient présents
+            // pour éviter les faux positifs (ex: "gel" seul matcherait trop de produits)
+            if (count($words) >= 2) {
+                $matchCount = 0;
+                foreach ($words as $w) {
+                    if (mb_stripos($haystack, $w) !== false) {
+                        $matchCount++;
+                    }
+                }
+                // Au moins 2 mots doivent correspondre
+                if ($matchCount < 2) {
+                    $matchFound = false;
+                }
+            }
+
+            if (!$matchFound) {
+                continue;
+            }
+
+            // Calculer un score de pertinence
+            $score = 0;
+            foreach ($words as $w) {
+                if (mb_stripos($nom, $w) !== false) {
+                    $score += 10;
+                }
+                // Bonus supplémentaire si le mot apparaît en tant que mot entier dans le nom
+                if (preg_match('/\b' . preg_quote($w, '/') . '\b/u', $nom)) {
+                    $score += 5;
+                }
+                if (strpos($nom, $w) === 0) {
+                    $score += 5;
+                }
+                if (mb_stripos($marque, $w) !== false) {
+                    $score += 3;
+                }
+                if (mb_stripos($categories, $w) !== false) {
+                    $score += 2;
+                }
+            }
+
+            // Bonus si le nom complet contient la phrase exacte (meilleure correspondance)
+            if (mb_stripos($nom, mb_strtolower($keyword)) !== false) {
+                $score += 20;
+            }
+
+            $scored[] = ['entry' => $entry, 'score' => $score];
+        }
+
+        // Trier par score décroissant
+        usort($scored, function ($a, $b) {
+            return $b['score'] <=> $a['score'];
+        });
+
+        // On garde une marge (limit * 3) car certains candidats seront
+        // écartés faute de stock lors de la conversion.
+        $poolLimit = max($limit * 3, $limit + 5);
+        $results = [];
+
+        foreach ($scored as $s) {
+            if (count($results) >= $limit) {
+                break;
+            }
+            if (count($results) >= $poolLimit) {
+                break;
+            }
+
+            $item = $this->catalogEntryToItem($s['entry']);
+            if ($item !== null) {
+                $results[] = $item;
+            }
+        }
+
+        return ['result' => $results];
+    }
+
+    /**
+     * Récupère les produits d'une catégorie (par NOM, tel que stocké dans
+     * le JSON) - remplace Category::getProducts() pour la recherche du
+     * chatbot.
+     */
+    private function getCatalogProductsByCategoryName($idLang, $categoryName, $limit = 50)
+    {
+        $categoryName = trim((string) $categoryName);
+        if ($categoryName === '') {
+            return [];
+        }
+
+        $catalog = $this->loadCatalogJson($idLang);
+        if (empty($catalog)) {
+            return [];
+        }
+
+        $target = mb_strtolower($categoryName);
+        $results = [];
+
+        foreach ($catalog as $entry) {
+            $categories = array_map('mb_strtolower', $entry['categories'] ?? []);
+            if (!in_array($target, $categories, true)) {
+                continue;
+            }
+
+            $item = $this->catalogEntryToItem($entry);
+            if ($item !== null) {
+                $results[] = $item;
+            }
+            if (count($results) >= $limit) {
+                break;
+            }
+        }
+
+        return $results;
+    }
+
+    /**
+     * Compte le nombre total de produits d'une catégorie dans le
+     * catalogue JSON, stock compris ou non (utilisé pour le message
+     * "il y a X produits dans cette catégorie"). Contrairement à
+     * getCatalogProductsByCategoryName(), ne vérifie pas le stock en
+     * direct : ce chiffre est purement informatif pour le client.
+     */
+    private function countCatalogProductsByCategoryName($idLang, $categoryName)
+    {
+        $categoryName = trim((string) $categoryName);
+        if ($categoryName === '') {
+            return 0;
+        }
+
+        $catalog = $this->loadCatalogJson($idLang);
+        $target = mb_strtolower($categoryName);
+        $count = 0;
+
+        foreach ($catalog as $entry) {
+            $categories = array_map('mb_strtolower', $entry['categories'] ?? []);
+            if (in_array($target, $categories, true)) {
+                $count++;
+            }
+        }
+
+        return $count;
     }
 }

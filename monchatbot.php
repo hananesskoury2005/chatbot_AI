@@ -3,6 +3,8 @@ if (!defined('_PS_VERSION_')) {
     exit;
 }
 
+require_once __DIR__ . '/CatalogJsonExporter.php';
+
 class MonChatbot extends Module
 {
     public function __construct()
@@ -10,7 +12,7 @@ class MonChatbot extends Module
         $this->name = 'monchatbot';
         $this->tab = 'front_office_features';
         $this->version = '1.0.0';
-        $this->author = 'Hanan Esskoury & Ibtissam Tiheroui';
+        $this->author = 'HananEsskouryETIbtissamTIHEROUI';
         $this->need_instance = 0;
         $this->ps_versions_compliancy = ['min' => '1.7', 'max' => '9.99.99'];
         $this->bootstrap = true;
@@ -23,14 +25,30 @@ class MonChatbot extends Module
 
     public function install()
     {
-        return parent::install()
+        $installed = parent::install()
             && $this->registerHook('displayFooter')
             && $this->registerHook('actionFrontControllerSetMedia')
+            // CORRECTIF : hooks pour régénérer automatiquement le catalogue
+            // JSON (voir CatalogJsonExporter) dès qu'un produit est créé,
+            // modifié ou supprimé, sans intervention manuelle.
+            && $this->registerHook('actionProductSave')
+            && $this->registerHook('actionProductDelete')
+            && $this->registerHook('actionProductUpdate')
+            && $this->registerHook('actionCategoryUpdate')
             && Configuration::updateValue('MONCHATBOT_GEMINI_API_KEY', '')
             && Configuration::updateValue('MONCHATBOT_ENABLED', true)
             && Configuration::updateValue('MONCHATBOT_NAME', 'Assistant')
             && Configuration::updateValue('MONCHATBOT_WELCOME_MSG', 'Bonjour 👋 Je suis votre assistant.')
             && Configuration::updateValue('MONCHATBOT_MAX_PRODUCTS', 200);
+
+        if ($installed) {
+            // Génère un premier catalogue JSON dès l'installation, pour que
+            // le chatbot ait tout de suite des données à chercher, sans
+            // attendre une première modification de produit.
+            CatalogJsonExporter::generateAllLanguages();
+        }
+
+        return $installed;
     }
 
     public function uninstall()
@@ -61,6 +79,40 @@ class MonChatbot extends Module
         return $this->display(__FILE__, 'chatbox.tpl');
     }
 
+    /**
+     * CORRECTIF : régénère le catalogue JSON du chatbot dès qu'un produit
+     * est ajouté ou modifié (nom, description, catégorie, marque...).
+     */
+    public function hookActionProductSave($params)
+    {
+        CatalogJsonExporter::generateAllLanguages();
+    }
+
+    public function hookActionProductUpdate($params)
+    {
+        CatalogJsonExporter::generateAllLanguages();
+    }
+
+    /**
+     * CORRECTIF : régénère le catalogue JSON quand un produit est supprimé,
+     * pour ne jamais laisser le chatbot recommander un produit qui n'existe
+     * plus.
+     */
+    public function hookActionProductDelete($params)
+    {
+        CatalogJsonExporter::generateAllLanguages();
+    }
+
+    /**
+     * CORRECTIF : régénère aussi le catalogue quand une catégorie est
+     * renommée/modifiée, puisque le JSON stocke les noms de catégorie par
+     * produit (et pas seulement leur ID).
+     */
+    public function hookActionCategoryUpdate($params)
+    {
+        CatalogJsonExporter::generateAllLanguages();
+    }
+
     public function getContent()
     {
         $output = '';
@@ -77,6 +129,14 @@ class MonChatbot extends Module
             }
 
             $output .= $this->displayConfirmation($this->l('Paramètres enregistrés avec succès.'));
+        }
+
+        // CORRECTIF : bouton manuel de régénération du catalogue JSON,
+        // utile si des produits ont été importés en masse (import CSV, etc.)
+        // sans passer par les hooks unitaires.
+        if (Tools::isSubmit('submitMonChatbotRegenerateCatalog')) {
+            CatalogJsonExporter::generateAllLanguages();
+            $output .= $this->displayConfirmation($this->l('Catalogue JSON régénéré avec succès.'));
         }
 
         return $output . $this->renderForm();
@@ -149,6 +209,13 @@ class MonChatbot extends Module
         $helper->fields_value['MONCHATBOT_GEMINI_API_KEY'] = '';
         $helper->fields_value['MONCHATBOT_MAX_PRODUCTS'] = Configuration::get('MONCHATBOT_MAX_PRODUCTS');
 
-        return $helper->generateForm([$fields_form]);
+        $regenerateForm = '<div class="panel">'
+            . '<form method="post">'
+            . '<button type="submit" name="submitMonChatbotRegenerateCatalog" class="btn btn-default">'
+            . $this->l('Régénérer maintenant le catalogue JSON du chatbot')
+            . '</button>'
+            . '</form></div>';
+
+        return $regenerateForm . $helper->generateForm([$fields_form]);
     }
 }
