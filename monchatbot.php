@@ -32,9 +32,17 @@ class MonChatbot extends Module
             // JSON (voir CatalogJsonExporter) dès qu'un produit est créé,
             // modifié ou supprimé, sans intervention manuelle.
             && $this->registerHook('actionProductSave')
+            && $this->registerHook('actionProductAdd')      // CORRECTIF : création produit (import CSV inclus)
             && $this->registerHook('actionProductDelete')
             && $this->registerHook('actionProductUpdate')
+            // CORRECTIF : hooks pour régénérer le catalogue quand une
+            // catégorie est créée, modifiée ou supprimée. Sans
+            // actionCategoryAdd, une catégorie toute nouvelle (ex. import
+            // CSV d'une catégorie inédite) n'apparaît jamais dans le JSON
+            // tant qu'aucun de ses champs n'est modifié après coup.
+            && $this->registerHook('actionCategoryAdd')     // CORRECTIF : création catégorie
             && $this->registerHook('actionCategoryUpdate')
+            && $this->registerHook('actionCategoryDelete')  // CORRECTIF : suppression catégorie
             && Configuration::updateValue('MONCHATBOT_GEMINI_API_KEY', '')
             && Configuration::updateValue('MONCHATBOT_ENABLED', true)
             && Configuration::updateValue('MONCHATBOT_NAME', 'Assistant')
@@ -88,6 +96,15 @@ class MonChatbot extends Module
         CatalogJsonExporter::generateAllLanguages();
     }
 
+    /**
+     * CORRECTIF : régénère le catalogue JSON quand un nouveau produit est
+     * créé (import CSV ou création manuelle).
+     */
+    public function hookActionProductAdd($params)
+    {
+        CatalogJsonExporter::generateAllLanguages();
+    }
+
     public function hookActionProductUpdate($params)
     {
         CatalogJsonExporter::generateAllLanguages();
@@ -104,11 +121,32 @@ class MonChatbot extends Module
     }
 
     /**
+     * CORRECTIF : régénère le catalogue JSON quand une NOUVELLE catégorie
+     * est créée (import CSV ou création manuelle) — sans ce hook, une
+     * catégorie inédite n'apparaît jamais dans le JSON tant qu'aucun de
+     * ses champs n'est modifié après coup.
+     */
+    public function hookActionCategoryAdd($params)
+    {
+        CatalogJsonExporter::generateAllLanguages();
+    }
+
+    /**
      * CORRECTIF : régénère aussi le catalogue quand une catégorie est
      * renommée/modifiée, puisque le JSON stocke les noms de catégorie par
      * produit (et pas seulement leur ID).
      */
     public function hookActionCategoryUpdate($params)
+    {
+        CatalogJsonExporter::generateAllLanguages();
+    }
+
+    /**
+     * CORRECTIF : régénère le catalogue JSON quand une catégorie est
+     * supprimée, pour retirer les produits qui n'ont plus de catégorie
+     * ou dont la catégorie a changé.
+     */
+    public function hookActionCategoryDelete($params)
     {
         CatalogJsonExporter::generateAllLanguages();
     }

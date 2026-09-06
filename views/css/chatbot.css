@@ -290,6 +290,7 @@
     flex: 1;
     min-width: 0;
     overflow: hidden;
+    position: relative; /* ancre #monchatbot-scroll-bottom à cette zone */
 }
 
 #monchatbot-header {
@@ -388,6 +389,19 @@
 .monchatbot-message-col .monchatbot-bubble-bot,
 .monchatbot-message-col .monchatbot-bubble-user {
     max-width: 100%;
+}
+
+/* Style des liens dans les bulles du bot */
+.monchatbot-bubble-bot .monchatbot-link {
+    color: #4A6069;
+    font-weight: 600;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+
+.monchatbot-bubble-bot .monchatbot-link:hover {
+    color: #2c2c2a;
+    text-decoration: none;
 }
 
 .monchatbot-bubble-user {
@@ -592,6 +606,7 @@
         display: none;
     }
 }
+
 /* Écran d'accueil centré (icône + titre + sous-titre), affiché quand la
    conversation est vide, dans le style d'un écran d'accueil d'assistant. */
 .monchatbot-welcome {
@@ -610,7 +625,6 @@
     margin-bottom: 8px;
 }
 
-
 .monchatbot-welcome-title {
     font-size: 19px;
     font-weight: 600;
@@ -622,10 +636,12 @@
     color: #8a8a86;
     max-width: 260px;
 }
+
 .monchatbot-welcome-icon svg {
     width: 30px;
     height: 30px;
 }
+
 /* Bouton flottant pour revenir au dernier message */
 #monchatbot-scroll-bottom {
     position: absolute;

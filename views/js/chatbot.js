@@ -89,6 +89,41 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     };
 
+    // ============================================================
+    // FONCTIONS UTILITAIRES POUR LES LIENS CLIQUABLES
+    // ============================================================
+
+    /**
+     * Échappe les caractères HTML pour éviter les injections XSS
+     */
+    function escapeHtml(str) {
+        var div = document.createElement('div');
+        div.textContent = str;
+        return div.innerHTML;
+    }
+
+    /**
+     * Échappe le texte puis transforme les URLs en liens cliquables
+     * Exemple: "Lien : https://..." -> "Lien : <a href=...>Voir le produit</a>"
+     */
+    function linkifyBotText(text) {
+        if (!text) return text;
+        var escaped = escapeHtml(text);
+        var urlRegex = /(https?:\/\/[^\s<]+)/g;
+        return escaped.replace(urlRegex, function (url) {
+            // Nettoyer l'URL (enlever les caractères de ponctuation éventuels à la fin)
+            var cleanUrl = url.replace(/[.,;:!?)]*$/, '');
+            return '<a href="' + cleanUrl + '" target="_blank" rel="noopener noreferrer" class="monchatbot-link">Voir le produit</a>';
+        });
+    }
+
+    /**
+     * Définit le contenu HTML d'une bulle bot avec les liens cliquables
+     */
+    function setBotBubbleContent(bubbleEl, text) {
+        bubbleEl.innerHTML = linkifyBotText(text);
+    }
+
     // Découpage simple de la journée : nuit/matin jusqu'à midi = "morning",
     // après-midi jusqu'à 18h = "afternoon" (on garde "Bonjour"), au-delà = "evening".
     function getGreetingMoment() {
@@ -310,7 +345,7 @@ document.addEventListener('DOMContentLoaded', function () {
         // Un "réessayer" ne renvoie que le texte : la photo d'origine (si le
         // message en avait une) n'est pas reconservée pour ce ré-appel.
         fetchBotReply(text, null, null, function (reply) {
-            botBubble.textContent = reply;
+            setBotBubbleContent(botBubble, reply);
             updateMessageAt(botRow, reply);
             syncCurrentConversation();
         });
@@ -427,7 +462,8 @@ document.addEventListener('DOMContentLoaded', function () {
 
         var bubbleEl = document.createElement('div');
         bubbleEl.className = 'monchatbot-bubble monchatbot-bubble-bot';
-        bubbleEl.textContent = text;
+        // Utilisation de setBotBubbleContent pour les liens cliquables
+        setBotBubbleContent(bubbleEl, text);
 
         var meta = document.createElement('div');
         meta.className = 'monchatbot-meta';
@@ -444,7 +480,9 @@ document.addEventListener('DOMContentLoaded', function () {
         copyBtn.title = 'Copier';
         copyBtn.innerHTML = COPY_ICON;
         copyBtn.addEventListener('click', function () {
-            copyToClipboard(bubbleEl.textContent, copyBtn);
+            // Récupérer le texte brut (sans les balises HTML) pour la copie
+            var plainText = bubbleEl.textContent;
+            copyToClipboard(plainText, copyBtn);
         });
 
         var retryBtn = document.createElement('button');
@@ -453,9 +491,10 @@ document.addEventListener('DOMContentLoaded', function () {
         retryBtn.innerHTML = RETRY_ICON;
         retryBtn.addEventListener('click', function () {
             retryBtn.disabled = true;
+            // Placeholder, pas de lien à ce stade, on garde textContent
             bubbleEl.textContent = '...';
             fetchBotReply(userText, null, null, function (reply) {
-                bubbleEl.textContent = reply;
+                setBotBubbleContent(bubbleEl, reply);
                 timeEl.textContent = formatTime(new Date());
                 retryBtn.disabled = false;
                 updateMessageAt(wrapper, reply);
@@ -479,9 +518,11 @@ document.addEventListener('DOMContentLoaded', function () {
         return wrapper;
     }
 
-    // Transforme la bulle utilisateur en champ éditable. À la validation,
-    // supprime tous les messages suivants (dont l'ancienne réponse du bot)
-    // et renvoie le nouveau texte au serveur.
+    // ============================================================
+    // CORRIGÉ : Transforme la bulle utilisateur en champ éditable.
+    // Si l'utilisateur annule (texte vide ou inchangé), on restaure
+    // simplement l'affichage sans rien supprimer.
+    // ============================================================
     function startEdit(rowEl, bubbleEl, originalText) {
         var editInput = document.createElement('input');
         editInput.type = 'text';
@@ -504,23 +545,16 @@ document.addEventListener('DOMContentLoaded', function () {
             done = true;
 
             var newText = editInput.value.trim();
-            if (newText === '') {
-                newText = originalText;
+            
+            // CORRIGÉ : si le texte est vide ou inchangé, on annule proprement
+            // sans supprimer la suite de la conversation
+            if (newText === '' || newText === originalText) {
+                bubbleEl.textContent = originalText;
+                return;
             }
-            bubbleEl.textContent = newText;
 
-            if (newText !== originalText) {
-                regenerateResponse(rowEl, newText);
-            } else {
-                truncateMessagesAfter(rowEl, newText);
-                var next = rowEl.nextSibling;
-                while (next) {
-                    var toRemove = next;
-                    next = next.nextSibling;
-                    messagesBox.removeChild(toRemove);
-                }
-                syncCurrentConversation();
-            }
+            bubbleEl.textContent = newText;
+            regenerateResponse(rowEl, newText);
         }
 
         editInput.addEventListener('keypress', function (e) {
@@ -557,7 +591,7 @@ document.addEventListener('DOMContentLoaded', function () {
         var botBubble = botRow.querySelector('.monchatbot-bubble-bot');
 
         fetchBotReply(text, imagePayload, imageMimePayload, function (reply) {
-            botBubble.textContent = reply;
+            setBotBubbleContent(botBubble, reply);
             updateMessageAt(botRow, reply);
             syncCurrentConversation();
         });
@@ -969,7 +1003,8 @@ document.addEventListener('DOMContentLoaded', function () {
     if (currentMessages.length === 0) {
         showWelcomeMessage();
     }
-     // --- Gestion du bouton "Revenir en bas" (flèche flottante) ---
+
+    // --- Gestion du bouton "Revenir en bas" (flèche flottante) ---
 
     var scrollBottomBtn = document.getElementById('monchatbot-scroll-bottom');
 
