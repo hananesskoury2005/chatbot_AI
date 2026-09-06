@@ -115,32 +115,6 @@ class MonChatbotChatModuleFrontController extends ModuleFrontController
             $public = $imageAnalysis['public'] ?? '';
             $marque = $imageAnalysis['marque'] ?? '';
             $keywords = $imageAnalysis['keywords'] ?? [];
-            // PATCH : si le TYPE de produit détecté sur la photo ne correspond à
-// aucune catégorie du catalogue, on n'a structurellement rien à proposer
-// comme alternative pertinente (ex: un parfum quand le catalogue ne
-// vend aucun parfum). Forcer des "alternatives" d'un rayon différent
-// (gel douche pour un parfum) est trompeur pour le client. On répond
-// honnêtement et on s'arrête là, sans chercher de produits.
-if (!$this->productTypeExistsInCatalog($productType, $availableCategoriesForImage, $apiKey)) {
-    $nomProduitDetecte = trim((string) ($imageAnalysis['nom_produit'] ?? ''));
-    $marqueDetectee = trim((string) $marque);
-
-    $descriptionProduit = $productType;
-    if (!empty($nomProduitDetecte)) {
-        $descriptionProduit = $nomProduitDetecte . (!empty($marqueDetectee) ? ' de ' . $marqueDetectee : '');
-    } elseif (!empty($marqueDetectee)) {
-        $descriptionProduit = $productType . ' ' . $marqueDetectee;
-    }
-
-    $categories = $this->getTopCategoryNames($idLang, 10);
-    $categoriesList = !empty($categories) ? implode(', ', $categories) : '';
-
-    $reply = "Je vois que vous cherchez " . $descriptionProduit . ", mais nous ne proposons "
-        . "pas ce type de produit dans notre catalogue pour le moment.\n\n"
-        . "Voici nos catégories disponibles : " . $categoriesList . ".";
-
-    $this->sendJsonResponse(['reply' => $reply]);
-}
 
             // 2) Construire les termes de recherche
             $searchTerms = [$productType];
@@ -227,6 +201,48 @@ if (!empty($productName) && strlen($productName) > 2) {
                         ];
                     }
                 }
+            }
+
+            // 6) Si toujours rien, expansion sémantique du besoin (type + bénéfices)
+            // via Gemini — même mécanisme que applySearchFallback() côté texte.
+            // Objectif : avant de conclure "on ne vend pas ça", vérifier sur une
+            // VRAIE recherche élargie (synonymes/vocabulaire catalogue), pas sur
+            // une simple comparaison du nom de catégorie (cf. bug t-shirt/Vêtements).
+            if (empty($produits)) {
+                $needDescription = trim($productType . ' ' . implode(' ', $benefices));
+                $fallbackResult = $this->applySearchFallback(
+                    $needDescription,
+                    $idLang,
+                    $apiKey,
+                    $availableCategoriesForImage,
+                    []
+                );
+                $produits = $fallbackResult['produits'];
+            }
+
+            // 7) Vraiment rien trouvé après recherche directe + type + expansion
+            // sémantique -> on informe honnêtement le client, en s'appuyant sur le
+            // résultat d'une recherche réelle dans le catalogue (plus fiable qu'une
+            // comparaison de noms de catégorie, qui peut échouer silencieusement).
+            if (empty($produits)) {
+                $nomProduitDetecte = trim((string) ($imageAnalysis['nom_produit'] ?? ''));
+                $marqueDetectee = trim((string) $marque);
+
+                $descriptionProduit = $productType;
+                if (!empty($nomProduitDetecte)) {
+                    $descriptionProduit = $nomProduitDetecte . (!empty($marqueDetectee) ? ' de ' . $marqueDetectee : '');
+                } elseif (!empty($marqueDetectee)) {
+                    $descriptionProduit = $productType . ' ' . $marqueDetectee;
+                }
+
+                $categories = $this->getTopCategoryNames($idLang, 10);
+                $categoriesList = !empty($categories) ? implode(', ', $categories) : '';
+
+                $reply = "Je vois que vous cherchez " . $descriptionProduit . ", mais nous ne proposons "
+                    . "pas ce type de produit dans notre catalogue pour le moment.\n\n"
+                    . "Voici nos catégories disponibles : " . $categoriesList . ".";
+
+                $this->sendJsonResponse(['reply' => $reply]);
             }
 
             // ============================================================
@@ -1628,39 +1644,6 @@ pour montrer que tu as bien compris, sans inventer de nom si aucun n'a été ide
         $cache[$cacheKey] = $category;
         return $category;
     }
-
-    /**
- * Vérifie si le type de produit détecté sur une photo correspond à une
- * catégorie réellement présente dans le catalogue — soit directement
- * (le nom du type ressemble à un nom de catégorie), soit via le mapping
- * sémantique existant (mapKeywordToCategory). Si aucun des deux ne
- * matche, ce type de produit n'est tout simplement pas vendu ici : on ne
- * doit pas forcer des "alternatives" d'un rayon totalement différent
- * (ex: proposer un gel douche pour un parfum).
- */
-private function productTypeExistsInCatalog($productType, array $availableCategories, $apiKey = null)
-{
-    $productType = trim((string) $productType);
-    if ($productType === '') {
-        // Pas d'info exploitable : on ne bloque pas, le flux normal gérera.
-        return true;
-    }
-
-    // 1) Correspondance directe avec un nom de catégorie du catalogue
-    foreach ($availableCategories as $categoryName) {
-        if (stripos($categoryName, $productType) !== false || stripos($productType, $categoryName) !== false) {
-            return true;
-        }
-    }
-
-    // 2) Mapping sémantique existant (ex: "dentifrice" -> "Dentaire")
-    $mappedCategory = $this->mapKeywordToCategory($productType, $availableCategories, $apiKey);
-    if ($mappedCategory !== null && in_array($mappedCategory, $availableCategories, true)) {
-        return true;
-    }
-
-    return false;
-}
 
     /**
      * Appelle Gemini une première fois pour détecter l'intention
