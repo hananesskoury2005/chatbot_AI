@@ -4,27 +4,13 @@ if (!defined('_PS_VERSION_')) {
 }
 
 /**
- * Exporte le catalogue produits (données de RECHERCHE uniquement : nom,
- * description, catégorie, marque, mots-clés) vers un fichier JSON par
- * langue, pour que le chatbot puisse chercher dans ce JSON au lieu de
- * taper la base à chaque message.
- *
- * IMPORTANT : le stock et le prix TTC ne sont volontairement PAS exportés
- * ici. Ces deux données changent en temps réel (commande, promotion), donc
- * elles sont toujours revérifiées en direct en base (getPriceTTC() dans
- * chat.php) juste avant de répondre au client, pour ne jamais recommander
- * un produit en rupture ou à un prix périmé.
+ * Exporte le catalogue produits vers un fichier JSON par langue.
+ * 
+ * Les données exportées incluent : nom, description, catégorie, marque et mots-clés.
+ * Le stock et le prix TTC ne sont pas exportés car ils sont vérifiés en direct.
  */
 class CatalogJsonExporter
 {
-    /**
-     * CORRECTIF : langue de repli fixée explicitement au français
-     * (id_lang = 1, celle du tout premier catalog_1.json de cette
-     * boutique), plutôt qu'à PS_LANG_DEFAULT. Ça garantit qu'une
-     * catégorie sans traduction retombe toujours sur le même contenu
-     * français que catalog_1.json, même si la langue par défaut de la
-     * config boutique change un jour.
-     */
     const FALLBACK_LANG_ID = 1;
 
     /**
@@ -37,8 +23,6 @@ class CatalogJsonExporter
 
     /**
      * Régénère le fichier JSON du catalogue pour une langue donnée.
-     * Appelée par les hooks actionProductSave / actionProductDelete
-     * de monchatbot.php, ou manuellement.
      */
     public static function generate($idLang)
     {
@@ -69,9 +53,6 @@ class CatalogJsonExporter
                 'categories' => $categoryNames,
                 'description' => strip_tags($item['description_short'] ?? ''),
                 'description_longue' => strip_tags($item['description'] ?? ''),
-                // On garde aussi le prix HT catalogue comme repli d'affichage
-                // (jamais utilisé pour la décision finale : voir getPriceTTC()
-                // dans chat.php, qui recalcule toujours le TTC en direct).
                 'prix_ht_catalogue' => (float) ($item['price'] ?? 0),
             ];
         }
@@ -98,7 +79,7 @@ class CatalogJsonExporter
     }
 
     /**
-     * Régénère le JSON pour TOUTES les langues actives de la boutique.
+     * Régénère le JSON pour toutes les langues actives de la boutique.
      */
     public static function generateAllLanguages()
     {
@@ -109,17 +90,10 @@ class CatalogJsonExporter
     }
 
     /**
-     * CORRECTIF : renvoie les noms de catégories du produit dans la langue
-     * demandée, avec repli sur le français (FALLBACK_LANG_ID) quand la
-     * traduction manque, et exclut la catégorie racine (Accueil/Home).
-     *
-     * Avant ce correctif, une catégorie sans traduction pour $idLang était
-     * silencieusement ignorée (nom vide == exclue), ce qui pouvait laisser
-     * dans le tableau final la seule catégorie racine "Accueil"/"Home"
-     * (elle, systématiquement traduite par l'installation PrestaShop de
-     * base) — donnant l'illusion trompeuse que le produit n'appartenait
-     * qu'à "Home", au lieu de simplement révéler une traduction manquante
-     * sur sa vraie catégorie.
+     * Récupère les noms des catégories d'un produit dans la langue demandée.
+     * 
+     * Si une traduction est manquante, un repli sur le français est effectué.
+     * La catégorie racine (Accueil/Home) est exclue du résultat.
      */
     private static function getCategoryNamesForProduct($idProduct, $idLang)
     {
@@ -128,9 +102,6 @@ class CatalogJsonExporter
             return [];
         }
 
-        // La catégorie racine (Accueil/Home) est associée à tous les
-        // produits par défaut : elle n'apporte aucune information de
-        // recherche utile au chatbot et est donc exclue du résultat.
         $idRootCategory = (int) Configuration::get('PS_HOME_CATEGORY');
 
         $categories = $product->getCategories();
@@ -154,9 +125,7 @@ class CatalogJsonExporter
     }
 
     /**
-     * Charge le nom d'une catégorie dans $idLang ; si la traduction est
-     * absente ou vide, retombe sur le français (FALLBACK_LANG_ID) plutôt
-     * que d'exclure silencieusement la catégorie du résultat.
+     * Récupère le nom d'une catégorie avec repli sur le français si la traduction est absente.
      */
     private static function getCategoryNameWithFallback($idCategory, $idLang)
     {
@@ -165,8 +134,6 @@ class CatalogJsonExporter
             return $category->name;
         }
 
-        // Traduction manquante pour $idLang : on retombe sur le français,
-        // comme dans catalog_1.json.
         if ($idLang !== self::FALLBACK_LANG_ID) {
             $fallbackCategory = new Category($idCategory, self::FALLBACK_LANG_ID);
             if (Validate::isLoadedObject($fallbackCategory) && !empty($fallbackCategory->name)) {

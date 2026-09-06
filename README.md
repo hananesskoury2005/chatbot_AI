@@ -23,6 +23,9 @@ Le client peut envoyer une photo (par exemple d'un produit qu'il a vu ailleurs) 
 ### 💬 Continuité de la conversation
 Chaque échange est sauvegardé et consultable depuis un historique organisé par date (Aujourd'hui, Hier, Cette semaine, Plus ancien), avec possibilité de reprendre, rechercher ou supprimer une conversation passée — pour une expérience continue plutôt qu'un chatbot sans mémoire.
 
+### ⚡ Catalogue mis en cache au format JSON
+Plutôt que d'interroger la base de données à chaque message, le module maintient un export JSON du catalogue (`catalog_<idLang>.json`, un fichier par langue), généré par `CatalogJsonExporter`. Ce fichier regroupe nom, description, catégories et marque de chaque produit, et sert de base à la recherche du chatbot. Il se régénère automatiquement à chaque ajout, modification ou suppression d'un produit ou d'une catégorie (via des hooks PrestaShop), ou manuellement depuis la page de configuration du module. Le stock et le prix TTC, eux, ne sont jamais lus depuis ce fichier : ils sont toujours vérifiés en direct en base au moment de la réponse, pour ne jamais recommander un produit en rupture ou à un prix périmé.
+
 ---
 
 ## 🛠️ Stack technique

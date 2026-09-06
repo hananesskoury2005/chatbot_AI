@@ -19,29 +19,14 @@ document.addEventListener('DOMContentLoaded', function () {
     var MAX_HISTORY = 15;
     var currentConversationId = null;
 
-    // Champ de recherche du panneau d'historique : créé dynamiquement une
-    // seule fois (pas dans le template HTML statique) et inséré juste après
-    // le titre "Historique". La requête tapée filtre la liste avant le
-    // regroupement par date.
     var historySearchInput = null;
     var historySearchQuery = '';
 
-    // Image sélectionnée (en attente d'envoi) : data URL complet + mime type
-    // extrait, remis à zéro après chaque envoi.
     var selectedBase64Image = null;
     var selectedImageMime = null;
 
-    // Requête en cours (permet d'annuler via le bouton devenu "stop").
     var currentAbortController = null;
 
-    // Représentation "source de vérité" de la conversation en cours, en
-    // parallèle du DOM. C'est CE tableau qu'on sauvegarde dans localStorage
-    // (et non plus le HTML brut) : à la restauration, on reconstruit les
-    // messages via addUserMessage()/addBotMessage(), ce qui recrée aussi
-    // leurs vrais event listeners (copier/réessayer/modifier). Sauvegarder
-    // du HTML brut puis faire messagesBox.innerHTML = ... recrée des nœuds
-    // DOM visuellement identiques mais SANS aucun listener attaché : les
-    // boutons ont l'air actifs mais ne font plus rien (le bug initial).
     var currentMessages = [];
 
     var COPY_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
@@ -51,17 +36,8 @@ document.addEventListener('DOMContentLoaded', function () {
     var EXPAND_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"></polyline><polyline points="9 21 3 21 3 15"></polyline><line x1="21" y1="3" x2="14" y2="10"></line><line x1="3" y1="21" x2="10" y2="14"></line></svg>';
     var COLLAPSE_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 14 10 14 10 20"></polyline><polyline points="20 10 14 10 14 4"></polyline><line x1="14" y1="10" x2="21" y2="3"></line><line x1="3" y1="21" x2="10" y2="14"></line></svg>';
 
-    // Icône de l'écran d'accueil : une étoile/sparkle en trait fin, dans le
-    // même style que les autres icônes du widget (stroke="currentColor"),
-    // plutôt qu'un émoji coloré qui détonnait avec le reste de l'interface.
     var WELCOME_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M6.5 6.5l2 2M15.5 15.5l2 2M17.5 6.5l-2 2M8.5 15.5l-2 2"></path><circle cx="12" cy="12" r="3"></circle></svg>';
 
-    // --- Message d'accueil (remplace la page blanche au démarrage / "Nouvelle conversation") ---
-
-    // Titre + sous-titres par moment de la journée. Plusieurs sous-titres par
-    // moment pour varier ; un est choisi au hasard à chaque affichage. Le
-    // titre reste stable (Bonjour/Bonsoir), seul le sous-titre change.
-    // L'icône, elle, est unique (WELCOME_ICON) et ne dépend pas du moment.
     var GREETINGS = {
         morning: {
             title: 'Bonjour !',
@@ -89,43 +65,26 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     };
 
-    // ============================================================
-    // FONCTIONS UTILITAIRES POUR LES LIENS CLIQUABLES
-    // ============================================================
-
-    /**
-     * Échappe les caractères HTML pour éviter les injections XSS
-     */
     function escapeHtml(str) {
         var div = document.createElement('div');
         div.textContent = str;
         return div.innerHTML;
     }
 
-    /**
-     * Échappe le texte puis transforme les URLs en liens cliquables
-     * Exemple: "Lien : https://..." -> "Lien : <a href=...>Voir le produit</a>"
-     */
     function linkifyBotText(text) {
         if (!text) return text;
         var escaped = escapeHtml(text);
         var urlRegex = /(https?:\/\/[^\s<]+)/g;
         return escaped.replace(urlRegex, function (url) {
-            // Nettoyer l'URL (enlever les caractères de ponctuation éventuels à la fin)
             var cleanUrl = url.replace(/[.,;:!?)]*$/, '');
             return '<a href="' + cleanUrl + '" target="_blank" rel="noopener noreferrer" class="monchatbot-link">Voir le produit</a>';
         });
     }
 
-    /**
-     * Définit le contenu HTML d'une bulle bot avec les liens cliquables
-     */
     function setBotBubbleContent(bubbleEl, text) {
         bubbleEl.innerHTML = linkifyBotText(text);
     }
 
-    // Découpage simple de la journée : nuit/matin jusqu'à midi = "morning",
-    // après-midi jusqu'à 18h = "afternoon" (on garde "Bonjour"), au-delà = "evening".
     function getGreetingMoment() {
         var hour = new Date().getHours();
         if (hour >= 18 || hour < 5) {
@@ -137,10 +96,6 @@ document.addEventListener('DOMContentLoaded', function () {
         return 'morning';
     }
 
-    // Affiche un écran d'accueil centré (icône + titre + sous-titre), dans
-    // le style d'un écran d'accueil d'assistant plutôt qu'une bulle de chat
-    // classique. PAS ajouté à currentMessages, pour ne pas polluer
-    // l'historique sauvegardé avec un écran qui n'est même pas un échange.
     function showWelcomeMessage() {
         messagesBox.innerHTML = '';
 
@@ -195,11 +150,6 @@ document.addEventListener('DOMContentLoaded', function () {
         return h + ':' + m;
     }
 
-    // Envoie un texte (+ image optionnelle) au serveur, appelle onDone(reply)
-    // une fois la réponse reçue. Le body passe désormais en JSON (et non plus
-    // en form-urlencoded) pour pouvoir transporter une image en base64 ;
-    // chat.php sait lire les deux formats. Bascule aussi le bouton envoi en
-    // bouton "stop" pendant la requête, et permet de l'annuler via AbortController.
     function fetchBotReply(text, image, imageMime, onDone) {
         currentAbortController = new AbortController();
         setGeneratingState(true);
@@ -229,8 +179,6 @@ document.addEventListener('DOMContentLoaded', function () {
             });
     }
 
-    // Bascule visuelle du bouton d'envoi entre la flèche (prêt à envoyer)
-    // et le carré (génération en cours, cliquable pour l'annuler).
     function setGeneratingState(isGenerating) {
         var iconSend = sendBtn.querySelector('.monchatbot-icon-send');
         var iconStop = sendBtn.querySelector('.monchatbot-icon-stop');
@@ -246,10 +194,6 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     }
 
-    // CORRECTIF 3 : Sélection d'une photo avec compression canvas
-    // L'image est compressée dès la sélection pour :
-    // 1) Économiser la taille en localStorage (quota)
-    // 2) Permettre de conserver l'image dans l'historique (plus besoin de la supprimer)
     fileInput.addEventListener('change', function (e) {
         var file = e.target.files[0];
         if (!file) {
@@ -297,15 +241,10 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
-    // Renvoie l'index d'une ligne (row) dans messagesBox, qui correspond
-    // exactement à son index dans currentMessages (les deux tableaux sont
-    // toujours tenus en parallèle : un ajout DOM = un push dans currentMessages).
     function getRowIndex(rowEl) {
         return Array.prototype.indexOf.call(messagesBox.children, rowEl);
     }
 
-    // Met à jour le texte d'un message déjà tracké (ex: une réponse bot qui
-    // vient d'arriver après un "...") sans toucher au reste du tableau.
     function updateMessageAt(rowEl, newText) {
         var index = getRowIndex(rowEl);
         if (index !== -1 && currentMessages[index]) {
@@ -313,9 +252,6 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     }
 
-    // Aligne currentMessages sur rowEl : tout ce qui suit rowEl est retiré
-    // du tableau (comme du DOM), et le texte de rowEl est mis à jour si besoin.
-    // À appeler AVANT de retirer les nœuds DOM suivants.
     function truncateMessagesAfter(rowEl, newTextForRow) {
         var index = getRowIndex(rowEl);
         if (index === -1) {
@@ -327,9 +263,6 @@ document.addEventListener('DOMContentLoaded', function () {
         currentMessages = currentMessages.slice(0, index + 1);
     }
 
-    // Supprime tous les messages qui suivent rowEl et redemande une réponse
-    // au serveur pour "text". Utilisé par "Réessayer" (user & bot) et par
-    // la validation d'une modification de message utilisateur.
     function regenerateResponse(rowEl, text) {
         truncateMessagesAfter(rowEl, text);
 
@@ -342,8 +275,6 @@ document.addEventListener('DOMContentLoaded', function () {
 
         var botRow = addBotMessage('...', text);
         var botBubble = botRow.querySelector('.monchatbot-bubble-bot');
-        // Un "réessayer" ne renvoie que le texte : la photo d'origine (si le
-        // message en avait une) n'est pas reconservée pour ce ré-appel.
         fetchBotReply(text, null, null, function (reply) {
             setBotBubbleContent(botBubble, reply);
             updateMessageAt(botRow, reply);
@@ -351,10 +282,6 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
-    // Retire l'écran d'accueil s'il est affiché. Appelée au tout début
-    // d'addUserMessage() : quel que soit l'appelant (sendMessage, restauration
-    // d'historique...), le premier vrai message doit toujours faire disparaître
-    // l'écran d'accueil, jamais l'empiler par-dessus.
     function clearWelcomeScreen() {
         var welcome = messagesBox.querySelector('.monchatbot-welcome');
         if (welcome) {
@@ -362,10 +289,6 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     }
 
-    // Ajoute un message utilisateur avec les boutons "Copier", "Réessayer"
-    // et "Modifier" sous la bulle (alignés sur la même ligne que l'heure).
-    // imageData (optionnel) : data URL de la photo jointe, affichée en
-    // miniature au-dessus du texte.
     function addUserMessage(text, imageData) {
         clearWelcomeScreen();
 
@@ -451,8 +374,6 @@ document.addEventListener('DOMContentLoaded', function () {
         return wrapper;
     }
 
-    // Ajoute un message bot avec boutons "Copier" et "Réessayer".
-    // userText = la question utilisateur qui a déclenché cette réponse (pour le "réessayer").
     function addBotMessage(text, userText) {
         var wrapper = document.createElement('div');
         wrapper.className = 'monchatbot-row monchatbot-row-bot';
@@ -462,7 +383,6 @@ document.addEventListener('DOMContentLoaded', function () {
 
         var bubbleEl = document.createElement('div');
         bubbleEl.className = 'monchatbot-bubble monchatbot-bubble-bot';
-        // Utilisation de setBotBubbleContent pour les liens cliquables
         setBotBubbleContent(bubbleEl, text);
 
         var meta = document.createElement('div');
@@ -480,7 +400,6 @@ document.addEventListener('DOMContentLoaded', function () {
         copyBtn.title = 'Copier';
         copyBtn.innerHTML = COPY_ICON;
         copyBtn.addEventListener('click', function () {
-            // Récupérer le texte brut (sans les balises HTML) pour la copie
             var plainText = bubbleEl.textContent;
             copyToClipboard(plainText, copyBtn);
         });
@@ -491,7 +410,6 @@ document.addEventListener('DOMContentLoaded', function () {
         retryBtn.innerHTML = RETRY_ICON;
         retryBtn.addEventListener('click', function () {
             retryBtn.disabled = true;
-            // Placeholder, pas de lien à ce stade, on garde textContent
             bubbleEl.textContent = '...';
             fetchBotReply(userText, null, null, function (reply) {
                 setBotBubbleContent(bubbleEl, reply);
@@ -518,11 +436,6 @@ document.addEventListener('DOMContentLoaded', function () {
         return wrapper;
     }
 
-    // ============================================================
-    // CORRIGÉ : Transforme la bulle utilisateur en champ éditable.
-    // Si l'utilisateur annule (texte vide ou inchangé), on restaure
-    // simplement l'affichage sans rien supprimer.
-    // ============================================================
     function startEdit(rowEl, bubbleEl, originalText) {
         var editInput = document.createElement('input');
         editInput.type = 'text';
@@ -545,9 +458,7 @@ document.addEventListener('DOMContentLoaded', function () {
             done = true;
 
             var newText = editInput.value.trim();
-            
-            // CORRIGÉ : si le texte est vide ou inchangé, on annule proprement
-            // sans supprimer la suite de la conversation
+
             if (newText === '' || newText === originalText) {
                 bubbleEl.textContent = originalText;
                 return;
@@ -597,8 +508,6 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
-    // Le bouton envoi devient un bouton stop pendant la génération : un clic
-    // dans cet état annule la requête au lieu d'en envoyer une nouvelle.
     function handleSendOrStop() {
         if (sendBtn.classList.contains('monchatbot-is-stop')) {
             if (currentAbortController) {
@@ -617,8 +526,6 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     });
 
-    // --- Sidebar : nouvelle conversation + historique ---
-
     function loadHistory() {
         try {
             return JSON.parse(localStorage.getItem(STORAGE_KEY)) || [];
@@ -627,15 +534,6 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     }
 
-    // CORRECTIF : localStorage a un quota limité (5-10 Mo selon les
-    // navigateurs). Les images en base64 stockées telles quelles dans
-    // l'historique le remplissaient en quelques échanges, ce qui faisait
-    // planter setItem() avec un QuotaExceededError. Cette exception,
-    // levée en aval d'un fetch pourtant réussi, était attrapée par le
-    // .catch() générique de fetchBotReply et affichait à tort
-    // "Erreur de connexion au serveur." même pour un message texte seul.
-    // saveHistory() ne doit donc plus jamais laisser planter le flux
-    // applicatif : on retente en réduisant l'historique si besoin.
     function saveHistory(history) {
         try {
             localStorage.setItem(STORAGE_KEY, JSON.stringify(history));
@@ -653,9 +551,6 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     }
 
-    // CORRECTIF 3 : L'image est déjà compressée en amont (800px, JPEG 70%)
-    // donc plus besoin de la supprimer pour l'historique. On retourne le
-    // message tel quel avec son image conservée.
     function stripImagesForStorage(messages) {
         return messages;
     }
@@ -711,14 +606,6 @@ document.addEventListener('DOMContentLoaded', function () {
             currentConversationId = null;
             return;
         }
-        // CORRECTIF : la liste est affichée sans re-tri (elle est supposée
-        // déjà triée du plus récent au plus ancien, cf. groupHistoryByDate).
-        // Mettre à jour le timestamp d'une conversation SANS la déplacer en
-        // tête laissait l'historique dans un ordre incohérent (une
-        // conversation reprise récemment restait coincée entre deux plus
-        // anciennes). On retire donc l'élément de sa position actuelle et
-        // on le replace en tête, comme archiveCurrentConversation() le
-        // fait déjà pour une conversation neuve.
         var item = history[idx];
         history.splice(idx, 1);
         item.messages = stripImagesForStorage(currentMessages);
@@ -764,10 +651,6 @@ document.addEventListener('DOMContentLoaded', function () {
 
     document.addEventListener('click', closeAllDropdowns);
 
-    // Crée le champ de recherche une seule fois et l'insère juste après le
-    // titre du panneau. On repère le titre par sa classe plutôt que de
-    // dépendre d'un id ajouté au template HTML, pour rester compatible avec
-    // le markup existant.
     function ensureHistorySearchUI() {
         if (historySearchInput) {
             return;
@@ -794,8 +677,6 @@ document.addEventListener('DOMContentLoaded', function () {
             historySearchQuery = searchInput.value;
             renderHistoryList();
         });
-        // Évite que le clic dans le champ ferme le panneau ou déclenche
-        // d'autres écouteurs globaux (ex. closeAllDropdowns).
         searchInput.addEventListener('click', function (e) {
             e.stopPropagation();
         });
@@ -807,10 +688,6 @@ document.addEventListener('DOMContentLoaded', function () {
         historySearchInput = searchInput;
     }
 
-    // Regroupe les conversations par période (Aujourd'hui / Hier / Cette
-    // semaine / Plus ancien), en conservant l'ordre reçu en entrée. Le tri
-    // par date (plus récent en premier) est fait explicitement dans
-    // renderHistoryList() avant l'appel à cette fonction.
     function getHistoryGroupLabel(timestamp) {
         var now = new Date();
         var date = new Date(timestamp);
@@ -852,14 +729,6 @@ document.addEventListener('DOMContentLoaded', function () {
     function renderHistoryList() {
         ensureHistorySearchUI();
 
-        // CORRECTIF : ne plus se fier uniquement à l'ordre d'écriture dans
-        // localStorage pour garantir "le plus récent en premier". Des
-        // conversations enregistrées avant le correctif de
-        // syncCurrentConversation() (ou tout autre chemin de code futur
-        // qui casserait l'invariant) restaient mal ordonnées même après
-        // la correction en amont. On trie donc explicitement ici, ce qui
-        // corrige aussi bien les données déjà existantes que tout futur
-        // cas similaire.
         var history = loadHistory().slice().sort(function (a, b) {
             return (b.timestamp || 0) - (a.timestamp || 0);
         });
@@ -896,89 +765,83 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
-    // Construit l'élément DOM d'une conversation dans la liste (extrait de
-    // l'ancienne boucle de renderHistoryList, inchangé fonctionnellement).
     function renderHistoryItem(item) {
-            var el = document.createElement('div');
-            el.className = 'monchatbot-history-item';
+        var el = document.createElement('div');
+        el.className = 'monchatbot-history-item';
 
-            var textCol = document.createElement('div');
-            textCol.className = 'monchatbot-history-item-text';
+        var textCol = document.createElement('div');
+        textCol.className = 'monchatbot-history-item-text';
 
-            var label = document.createElement('div');
-            label.className = 'monchatbot-history-item-label';
-            label.textContent = item.preview;
+        var label = document.createElement('div');
+        label.className = 'monchatbot-history-item-label';
+        label.textContent = item.preview;
 
-            var date = document.createElement('div');
-            date.className = 'monchatbot-history-item-date';
-            date.textContent = formatRelativeDate(item.timestamp);
+        var date = document.createElement('div');
+        date.className = 'monchatbot-history-item-date';
+        date.textContent = formatRelativeDate(item.timestamp);
 
-            textCol.appendChild(label);
-            textCol.appendChild(date);
+        textCol.appendChild(label);
+        textCol.appendChild(date);
 
-            var menuBtn = document.createElement('button');
-            menuBtn.className = 'monchatbot-history-item-menu';
-            menuBtn.title = 'Options';
-            menuBtn.setAttribute('aria-label', 'Options de la conversation');
-            menuBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.8"></circle><circle cx="12" cy="12" r="1.8"></circle><circle cx="12" cy="19" r="1.8"></circle></svg>';
+        var menuBtn = document.createElement('button');
+        menuBtn.className = 'monchatbot-history-item-menu';
+        menuBtn.title = 'Options';
+        menuBtn.setAttribute('aria-label', 'Options de la conversation');
+        menuBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.8"></circle><circle cx="12" cy="12" r="1.8"></circle><circle cx="12" cy="19" r="1.8"></circle></svg>';
 
-            menuBtn.addEventListener('click', function (e) {
+        menuBtn.addEventListener('click', function (e) {
+            e.stopPropagation();
+            var alreadyOpen = el.querySelector('.monchatbot-history-item-dropdown');
+            closeAllDropdowns();
+            if (alreadyOpen) {
+                return;
+            }
+
+            var dropdown = document.createElement('div');
+            dropdown.className = 'monchatbot-history-item-dropdown';
+
+            var deleteOption = document.createElement('button');
+            deleteOption.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path></svg><span>Supprimer</span>';
+            deleteOption.addEventListener('click', function (e) {
                 e.stopPropagation();
-                var alreadyOpen = el.querySelector('.monchatbot-history-item-dropdown');
-                closeAllDropdowns();
-                if (alreadyOpen) {
-                    return;
+                var wasCurrent = (currentConversationId === item.id);
+                deleteHistoryItem(item.id);
+                if (wasCurrent) {
+                    currentConversationId = null;
+                    showWelcomeMessage();
+                    currentMessages = [];
+                    historyPanel.classList.remove('monchatbot-open');
+                    input.focus();
                 }
-
-                var dropdown = document.createElement('div');
-                dropdown.className = 'monchatbot-history-item-dropdown';
-
-                var deleteOption = document.createElement('button');
-                deleteOption.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path></svg><span>Supprimer</span>';
-                deleteOption.addEventListener('click', function (e) {
-                    e.stopPropagation();
-                    var wasCurrent = (currentConversationId === item.id);
-                    deleteHistoryItem(item.id);
-                    if (wasCurrent) {
-                        currentConversationId = null;
-                        showWelcomeMessage();
-                        currentMessages = [];
-                        historyPanel.classList.remove('monchatbot-open');
-                        input.focus();
-                    }
-                    renderHistoryList();
-                });
-
-                dropdown.appendChild(deleteOption);
-                el.appendChild(dropdown);
+                renderHistoryList();
             });
 
-            el.appendChild(textCol);
-            el.appendChild(menuBtn);
+            dropdown.appendChild(deleteOption);
+            el.appendChild(dropdown);
+        });
 
-            el.addEventListener('click', function () {
-                // Reconstruction via addUserMessage()/addBotMessage() plutôt
-                // qu'une injection de HTML brut : chaque bouton récupère ainsi
-                // ses vrais event listeners (copier/réessayer/modifier), et
-                // currentMessages redevient cohérent avec le DOM affiché.
-                messagesBox.innerHTML = '';
-                currentMessages = [];
+        el.appendChild(textCol);
+        el.appendChild(menuBtn);
 
-                var messages = item.messages || [];
-                messages.forEach(function (m) {
-                    if (m.role === 'user') {
-                        addUserMessage(m.text, m.image);
-                    } else {
-                        addBotMessage(m.text, m.userText);
-                    }
-                });
+        el.addEventListener('click', function () {
+            messagesBox.innerHTML = '';
+            currentMessages = [];
 
-                messagesBox.scrollTop = messagesBox.scrollHeight;
-                currentConversationId = item.id;
-                historyPanel.classList.remove('monchatbot-open');
+            var messages = item.messages || [];
+            messages.forEach(function (m) {
+                if (m.role === 'user') {
+                    addUserMessage(m.text, m.image);
+                } else {
+                    addBotMessage(m.text, m.userText);
+                }
             });
 
-            return el;
+            messagesBox.scrollTop = messagesBox.scrollHeight;
+            currentConversationId = item.id;
+            historyPanel.classList.remove('monchatbot-open');
+        });
+
+        return el;
     }
 
     newChatBtn.addEventListener('click', function () {
@@ -997,22 +860,15 @@ document.addEventListener('DOMContentLoaded', function () {
         historyPanel.classList.toggle('monchatbot-open');
     });
 
-    // Affiche le message d'accueil dès le chargement de la page si la fenêtre
-    // est déjà visible (cas rare, display géré normalement par le clic sur la
-    // bulle), pour ne jamais laisser la zone de messages vide au premier affichage.
     if (currentMessages.length === 0) {
         showWelcomeMessage();
     }
 
-    // --- Gestion du bouton "Revenir en bas" (flèche flottante) ---
-
     var scrollBottomBtn = document.getElementById('monchatbot-scroll-bottom');
 
-    // Affiche ou masque la flèche selon la position de défilement
     function toggleScrollBottomButton() {
-        if (!scrollBottomBtn) return; // Sécurité si l'élément n'est pas encore dans le DOM
+        if (!scrollBottomBtn) return;
         var distanceFromBottom = messagesBox.scrollHeight - messagesBox.scrollTop - messagesBox.clientHeight;
-        // Si on est à plus de 150px du bas, on affiche le bouton
         if (distanceFromBottom > 150) {
             scrollBottomBtn.classList.add('monchatbot-visible');
         } else {
@@ -1020,15 +876,13 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     }
 
-    // Écouteur sur le défilement de la zone de messages
     if (messagesBox && scrollBottomBtn) {
         messagesBox.addEventListener('scroll', toggleScrollBottomButton);
 
-        // Au clic sur la flèche, on remonte (ou descend) tout en bas
         scrollBottomBtn.addEventListener('click', function () {
             messagesBox.scrollTo({
                 top: messagesBox.scrollHeight,
-                behavior: 'smooth' // Défilement fluide
+                behavior: 'smooth'
             });
         });
     }

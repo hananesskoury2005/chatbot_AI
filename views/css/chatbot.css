@@ -119,7 +119,6 @@
     border-bottom: 1px solid #eee;
 }
 
-/* Barre de recherche, insérée dynamiquement juste sous le titre du panneau */
 .monchatbot-history-search-wrap {
     display: flex;
     align-items: center;
@@ -290,7 +289,7 @@
     flex: 1;
     min-width: 0;
     overflow: hidden;
-    position: relative; /* ancre #monchatbot-scroll-bottom à cette zone */
+    position: relative; 
 }
 
 #monchatbot-header {
@@ -363,8 +362,6 @@
     justify-content: flex-start;
 }
 
-/* Colonne englobant la bulle (user ou bot) + sa barre méta (heure + actions),
-   pour qu'elles restent alignées et limitées à la même largeur maximale que la bulle. */
 .monchatbot-message-col {
     display: flex;
     flex-direction: column;
@@ -378,14 +375,10 @@
     border-radius: 12px;
     font-size: 14px;
     line-height: 1.45;
-    /* Préserve les retours à la ligne (\n) envoyés par Gemini : sans ça,
-       le navigateur les ignore et affiche tout sur une seule ligne. */
     white-space: pre-line;
     word-wrap: break-word;
 }
 
-/* À l'intérieur de .monchatbot-message-col, la largeur max est déjà portée
-   par le conteneur : on laisse la bulle occuper l'espace disponible. */
 .monchatbot-message-col .monchatbot-bubble-bot,
 .monchatbot-message-col .monchatbot-bubble-user {
     max-width: 100%;
@@ -416,8 +409,6 @@
     border-bottom-left-radius: 4px;
 }
 
-/* Ligne "métadonnées" sous la bulle : horodatage + actions sur UNE SEULE ligne,
-   comme dans la maquette (ex: "il y a 3 minutes  [copier] [réessayer] [modifier]"). */
 .monchatbot-meta {
     display: flex;
     flex-direction: row;
@@ -471,7 +462,6 @@
     display: none !important;
 }
 
-/* Aperçu de la photo sélectionnée, juste au-dessus de la zone de saisie */
 #monchatbot-image-preview {
     position: relative;
     display: flex;
@@ -607,8 +597,6 @@
     }
 }
 
-/* Écran d'accueil centré (icône + titre + sous-titre), affiché quand la
-   conversation est vide, dans le style d'un écran d'accueil d'assistant. */
 .monchatbot-welcome {
     display: flex;
     flex-direction: column;
@@ -642,10 +630,9 @@
     height: 30px;
 }
 
-/* Bouton flottant pour revenir au dernier message */
 #monchatbot-scroll-bottom {
     position: absolute;
-    bottom: 70px; /* Au-dessus de la zone de saisie */
+    bottom: 70px; 
     right: 15px;
     width: 32px;
     height: 32px;
@@ -677,5 +664,5 @@
 #monchatbot-scroll-bottom svg {
     width: 16px;
     height: 16px;
-    transform: rotate(45deg); /* Pour orienter la flèche vers le bas droite comme sur votre image */
+    transform: rotate(45deg);
 }
